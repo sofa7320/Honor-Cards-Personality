@@ -223,4 +223,4 @@ pwsh -File scripts/build.ps1        # 默认 :app:assembleDebug
 
 Copyright 2026 The CardPersonality Project contributors
 
-> 如果你要以自己的名义发布，请把 `LICENSE` 文件中的版权行替换为你的名字/组织（Apache-2.0 要求保留版权声明）。
+> 如果你要以自己的名义发布，请把 `NOTICE.md` 与 `README.md` 中的版权行替换为你的名字/组织（Apache-2.0 要求在分发时保留版权声明）。
