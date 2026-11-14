@@ -4,6 +4,8 @@
 
 **English:** An LSPosed module that lets you replace card faces in HONOR Wallet with your own images, with a Miuix-styled editor (text/image stickers, fonts, outline, layers, ZIP import/export). Display-layer replacement only — the wallet app and its data are not modified.
 
+License: [Apache-2.0](LICENSE) · 第三方声明: [NOTICE.md](NOTICE.md)
+
 > ⚠️ 本模块仅改变**显示层**（替换 ImageView 渲染的内容），不会修改荣耀钱包的卡面资源、卡片数据或任何系统文件。需要 **root + LSPosed（Zygisk）**。使用风险自负，详见[免责声明](#免责声明)。
 
 ---
@@ -207,10 +209,18 @@ pwsh -File scripts/build.ps1        # 默认 :app:assembleDebug
 
 ## 致谢
 
-- [Miuix](https://github.com/miuix-kotlin-multiplatform)（top.yukonga.miuix.kmp）— 界面组件与设计规范
+- [Miuix](https://github.com/compose-miuix-ui/miuix)（top.yukonga.miuix.kmp）— 界面组件与设计规范
 - [LSPosed](https://github.com/LSPosed/LSPosed) — 模块加载框架
 - AndroidX Compose、Kotlin、jadx（逆向分析辅助）
 
 ## 许可证
 
-本项目暂未指定开源许可证（未附带 LICENSE）。如需转载/二次开发，请先联系作者协商；若希望以 MIT/Apache-2.0/GPL 等许可证开源，可自行添加 `LICENSE` 文件并更新本节。
+本项目采用 **Apache License 2.0** 开源许可，全文见 [LICENSE](LICENSE)。
+
+- 你可以自由使用、修改、分发（含商用与闭源衍生），只需保留版权与许可证声明、在修改过的文件中注明改动；
+- 本许可证包含明确的专利授权条款；
+- 第三方组件与字体/素材声明见 [NOTICE.md](NOTICE.md)。
+
+Copyright 2026 The CardPersonality Project contributors
+
+> 如果你要以自己的名义发布，请把 `LICENSE` 文件中的版权行替换为你的名字/组织（Apache-2.0 要求保留版权声明）。
