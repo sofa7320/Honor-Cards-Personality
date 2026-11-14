@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The panel downloads the wallet's current CDN card-face image for the "current face" preview -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Direct Vibrator ticks/snap haptics: Honor's vibrator service ignores HapticFeedback constants -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!--
+      LSPosed module packaging (legacy Xposed API):
+      * assets/xposed_init lists the entry class (com.cardpersonality.honor.hook.XposedEntry)
+      * the meta-data below make LSPosed recognize this APK as a module
+      * de.robv.* classes are compileOnly stubs and MUST NOT appear in the APK
+    -->
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true">
+
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="荣耀卡面工坊 · 荣耀钱包自定义卡面" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="93" />
+        <!-- Enables XSharedPreferences fallback for the config channel -->
+        <meta-data
+            android:name="xposedsharedprefs"
+            android:value="true" />
+
+        <!-- Launcher activity (thin Compose host; ui-dev supplies the root composable) -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="卡面工坊"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density"
+            android:theme="@style/Theme.HonorCards">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Read-only FaceProvider:
+            content://com.cardpersonality.honor.face/card/<sha256hex(fileKey)>?v=<version> -> JPEG
+            ContentResolver.call(): config / report / getReport / ping / getFaceConfig / getAllConfigs
+        -->
+        <provider
+            android:name=".FaceProvider"
+            android:authorities="com.cardpersonality.honor.face"
+            android:exported="true"
+            android:grantUriPermissions="false" />
+    </application>
+
+</manifest>

@@ -1,0 +1,28 @@
+# Gradle / Kotlin
+.gradle/
+.kotlin/
+build/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Local machine config
+local.properties
+.idea/
+*.iml
+
+# Build outputs / deliverables
+*.apk
+*.aab
+*.zip
+dist/
+work/
+release/
+
+# Signing
+*.jks
+*.keystore
+signing.properties
+
+# OS
+.DS_Store
+Thumbs.db
