@@ -1,5 +1,8 @@
 # 荣耀卡面工坊 · Card Personality
 
+[![Build](https://github.com/sofa7320/Honor-Cards-Personality/actions/workflows/build.yml/badge.svg)](https://github.com/sofa7320/Honor-Cards-Personality/actions/workflows/build.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 > 一个基于 **LSPosed** 的荣耀钱包卡面自定义模块：用你自己的图片替换钱包卡片卡面，并在 Miuix 风格的编辑面板里自由排版（文字、图片贴纸、字体、描边、层级、ZIP 导入导出、隐藏钱包原生组件）。
 
 **English:** An LSPosed module that lets you replace card faces in HONOR Wallet with your own images, with a Miuix-styled editor (text/image stickers, fonts, outline, layers, ZIP import/export). Display-layer replacement only — the wallet app and its data are not modified.
@@ -13,12 +16,14 @@ License: [Apache-2.0](LICENSE) · 第三方声明: [NOTICE.md](NOTICE.md)
 ## 功能特性
 
 ### 🎴 卡面
+
 - 相册选图 / 内置示例图 / **以钱包当前卡面为底图**作为卡面来源
 - 等比缩放、平移、水平/垂直翻转；圆角 12dp、比例 336 : 208（导出 1008 × 624）
 - 保存后钱包内**实时生效**（无需重启钱包）
 - 覆盖模块已适配的卡类型（交通卡、门禁卡、车钥匙、银行卡、校园卡、eBike 等，具体以钱包版本为准）
 
 ### ✏️ 编辑面板（Miuix 风格）
+
 - 编辑页固定顶部预览，滚动编辑不再遮挡卡面
 - 三个标签页：**图片 / 元素 / 组件**；切换淡入无闪烁，保留各页滚动位置
 - 滑杆：点击轨道定位、关键点磁吸、关键点/两端震动反馈、单项重置
@@ -29,46 +34,49 @@ License: [Apache-2.0](LICENSE) · 第三方声明: [NOTICE.md](NOTICE.md)
 - 新增元素自动放到最上层
 
 ### 🔤 文字与图片贴纸
+
 - 文字：字体、字号、粗细（100–900）、斜体、下划线、发光、描边、颜色（预设 + 自定义色板/HEX）、透明度、旋转、翻转
 - **描边只出现在字形外轮廓**（先描边后填充），不会出现内部描边线
 - 字体：内置西文/中文字族（原族名 + 「（西文）/（中文）」标注）、**导入 .ttf/.otf** 自定义字体
 - 图片贴纸：透明度、旋转、翻转、尺寸、重命名（长按名称）、显示/隐藏、删除
 
 ### 📦 数据
+
 - **卡面 ZIP 导出**到 `Download/honor_cards_personality/`（配置 + 源图 + 贴纸 + 字体）
 - **ZIP 导入**恢复卡面（校验格式，非法包有明确错误提示）
 - 配置本地 JSON 存储，原子写入、版本化
 
 ### 🧩 组件
+
 - 隐藏/保留钱包原生叠加元素（如交通卡详情左下角「已出站」标签等）；修改即时生效
 
 ---
 
 ## 截图
 
-| 首页 | 编辑页 · 自动底图 |
-|---|---|
+| 首页                            | 编辑页 · 自动底图                                  |
+| ----------------------------- | ------------------------------------------- |
 | ![home](docs/img/01-home.png) | ![editor](docs/img/02-editor-auto-base.png) |
 
-| 字体选择（原族名 + 语言标注） | 文字描边 |
-|---|---|
+| 字体选择（原族名 + 语言标注）                          | 文字描边                              |
+| ----------------------------------------- | --------------------------------- |
 | ![font](docs/img/09-font-annotations.png) | ![stroke](docs/img/04-stroke.png) |
 
-| 层级（列表上层 = 渲染最上） | 钱包内效果（描边外轮廓） |
-|---|---|
+| 层级（列表上层 = 渲染最上）                   | 钱包内效果（描边外轮廓）                             |
+| --------------------------------- | ---------------------------------------- |
 | ![layers](docs/img/05-layers.png) | ![wallet](docs/img/07-wallet-stroke.png) |
 
 ---
 
 ## 兼容性
 
-| 项目 | 测试环境 |
-|---|---|
-| 机型 | 荣耀 Magic 7 Pro（PTP-AN10） |
-| 系统 | MagicOS 11.0.0.117 / Android 17 |
-| 荣耀钱包 | 11.0.3.305（priv-app） |
-| 框架 | LSPosed 2.2.1（legacy Xposed API，Zygisk） |
-| 模块 | `com.cardpersonality.honor`，最低 Android 12（API 31+ 体验最佳，minSdk 28） |
+| 项目   | 测试环境                                                              |
+| ---- | ----------------------------------------------------------------- |
+| 机型   | 荣耀 Magic 7 Pro（PTP-AN10）                                          |
+| 系统   | MagicOS 11.0.0.117 / Android 17                                   |
+| 荣耀钱包 | 11.0.3.305（priv-app）                                              |
+| 框架   | LSPosed 2.2.1（legacy Xposed API，Zygisk）                           |
+| 模块   | `com.cardpersonality.honor`，最低 Android 12（API 31+ 体验最佳，minSdk 28） |
 
 - 其他钱包版本可能因类名/布局 id 变化导致 hook 失效；模块采用 **fail-open** 策略（hook 失败不影响钱包正常运行），无配置时严格 no-op。
 - 需要已 root 且启用 Zygisk + LSPosed。**bootloader 锁定**的设备请自行评估（本模块不需要修改系统分区或刷机）。
@@ -145,10 +153,14 @@ pwsh -File scripts/build.ps1        # 默认 :app:assembleDebug
 │     └─ AndroidManifest.xml
 ├─ xposed-stub/              # compileOnly：legacy Xposed API 桩
 ├─ scripts/build.ps1         # 带互斥锁的 Windows 构建入口
+├─ .github/workflows/build.yml  # CI：构建 + 打 tag 自动发 Release
 ├─ docs/
 │  ├─ ARCHITECTURE.md        # 架构、hook 清单、Provider 契约、线程/版本策略
 │  ├─ acceptance/            # 各轮真机验收记录
 │  └─ img/                   # 截图
+├─ CHANGELOG.md              # 更新日志
+├─ CONTRIBUTING.md           # 贡献指南
+├─ NOTICE.md                 # 第三方组件与许可声明
 ├─ build.gradle.kts / settings.gradle.kts / gradle.properties
 └─ README.md
 ```
@@ -164,6 +176,14 @@ pwsh -File scripts/build.ps1        # 默认 :app:assembleDebug
 - 更多细节（hook 清单、Provider 契约、线程约束、版本策略）见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ---
+
+## 开发与贡献
+
+- 贡献流程、代码约定、测试要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- 版本变更见 [CHANGELOG.md](CHANGELOG.md)；架构与 hook 细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+- CI：[`.github/workflows/build.yml`](.github/workflows/build.yml) 在 push/PR 时自动构建 debug APK 并上传 artifact；
+  推送 `v*` 标签时会自动生成 GitHub Release（APK + sha256 + NOTICE.md）。
+- 本地构建：`gradle :app:assembleDebug`（或 `pwsh -File scripts/build.ps1`）。
 
 ## 隐私与安全
 
@@ -187,14 +207,14 @@ pwsh -File scripts/build.ps1        # 默认 :app:assembleDebug
 
 ## 版本历史
 
-| 版本 | 主要变更 |
-|---|---|
-| **0.2.4** | 长图/大图**自由摆放**（彻底移除位置硬限制）；字体选择增加「（西文）/（中文）」语言标注 |
-| 0.2.3 | 旋转 -360~360 + 90° 吸附/防误触/震动；「尺寸」5–200%（默认 50%）；滑杆磁吸与端点震动；仅重命名可保存；新元素置顶；字体原名；描边只留外轮廓；选中性能优化；修复组件隐藏不生效 |
-| 0.2.2 | ZIP 导入、自动以当前卡面为底图、滑杆点击定位、更轻吸附、层级方向与命中修正、紧凑字体弹窗、描边填充+彩色、真实震动、防闪烁、选中隔离 |
-| 0.2.1 | 字体导入上限、错误提示、HEX 归一化等修复 |
-| 0.2.0 | 文字样式（粗细/斜体/下划线/发光/描边/字体）、吸附、翻转、页面动画 |
-| 0.1.0 | 初版：卡面替换、贴纸、编辑面板 |
+| 版本        | 主要变更                                                                                                 |
+| --------- | ---------------------------------------------------------------------------------------------------- |
+| **0.2.4** | 长图/大图**自由摆放**（彻底移除位置硬限制）；字体选择增加「（西文）/（中文）」语言标注                                                       |
+| 0.2.3     | 旋转 -360~360 + 90° 吸附/防误触/震动；「尺寸」5–200%（默认 50%）；滑杆磁吸与端点震动；仅重命名可保存；新元素置顶；字体原名；描边只留外轮廓；选中性能优化；修复组件隐藏不生效 |
+| 0.2.2     | ZIP 导入、自动以当前卡面为底图、滑杆点击定位、更轻吸附、层级方向与命中修正、紧凑字体弹窗、描边填充+彩色、真实震动、防闪烁、选中隔离                                 |
+| 0.2.1     | 字体导入上限、错误提示、HEX 归一化等修复                                                                               |
+| 0.2.0     | 文字样式（粗细/斜体/下划线/发光/描边/字体）、吸附、翻转、页面动画                                                                  |
+| 0.1.0     | 初版：卡面替换、贴纸、编辑面板                                                                                      |
 
 各版本真机验收记录见 [docs/acceptance/](docs/acceptance/)。
 
@@ -213,14 +233,4 @@ pwsh -File scripts/build.ps1        # 默认 :app:assembleDebug
 - [LSPosed](https://github.com/LSPosed/LSPosed) — 模块加载框架
 - AndroidX Compose、Kotlin、jadx（逆向分析辅助）
 
-## 许可证
-
-本项目采用 **Apache License 2.0** 开源许可，全文见 [LICENSE](LICENSE)。
-
-- 你可以自由使用、修改、分发（含商用与闭源衍生），只需保留版权与许可证声明、在修改过的文件中注明改动；
-- 本许可证包含明确的专利授权条款；
-- 第三方组件与字体/素材声明见 [NOTICE.md](NOTICE.md)。
-
-Copyright 2026 The CardPersonality Project contributors
-
-> 如果你要以自己的名义发布，请把 `NOTICE.md` 与 `README.md` 中的版权行替换为你的名字/组织（Apache-2.0 要求在分发时保留版权声明）。
+# 
