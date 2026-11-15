@@ -119,6 +119,16 @@ object FaceHookEngine {
     private val ownerHiddenViews = java.util.Collections.synchronizedMap(
         java.util.WeakHashMap<View, String>(),
     )
+    /**
+     * Roots whose face could not be applied yet because provider config was not ready (cold-start
+     * race, e.g. double-press-power SwipeCardActivity). Retried when config arrives + delays.
+     */
+    private val pendingFaceRoots = java.util.Collections.synchronizedMap(
+        java.util.WeakHashMap<View, CardIdentity>(),
+    )
+
+    /** Cold-start retry schedule for pending face applications (ms since the bind). */
+    private val FACE_RETRY_DELAYS_MS = longArrayOf(300L, 800L, 1500L, 2500L)
     /** Bound adapter/holder roots -> identity (re-apply element hides on CONFIG_CHANGED). */
     private val boundRoots = java.util.Collections.synchronizedMap(
         java.util.WeakHashMap<View, CardIdentity>(),
@@ -179,6 +189,13 @@ object FaceHookEngine {
             if (ctx != null) {
                 HLog.i("provider probe at install: ctx=${ctx.packageName}")
                 ProviderClient.prefetchAsync() // background IPC only (ANR fix v14)
+                // Cold-start: when config finally arrives, finish any pending face applications.
+                ProviderClient.addConfigListener {
+                    try {
+                        retryPendingFaces()
+                    } catch (_: Throwable) {
+                    }
+                }
                 ensureRefreshHooks(ctx)
             } else {
                 HLog.i("provider probe deferred until first card bind (no app context yet)")
@@ -804,6 +821,8 @@ object FaceHookEngine {
                     reloadRegisteredViews()
                     rebindHomeStack()
                     rebindDetailPagers()
+                    // Round-9: config just arrived — finish cold-start pending faces first.
+                    retryPendingFaces()
                     // Round-7: make element hide/unhide take effect on already-open pages too.
                     reapplyElementHides()
                     HLog.i("CONFIG_CHANGED: refresh issued (replaced=$replacedCount)")
@@ -916,8 +935,25 @@ object FaceHookEngine {
 
     // ------------------------------------------------------------------ face application helpers
 
-    private fun applyFaceToRoot(root: View, identity: CardIdentity) {
-        val resolved = ProviderClient.resolve(identity.type, identity.id) ?: return
+    private fun applyFaceToRoot(root: View, identity: CardIdentity, scheduleRetries: Boolean = true) {
+        val resolved = ProviderClient.resolve(identity.type, identity.id)
+        if (resolved == null) {
+            // Cold-start race: config/provider is not ready yet. Remember the root and retry soon;
+            // otherwise the page would keep the original face until it happens to re-bind.
+            try {
+                pendingFaceRoots[root] = identity
+            } catch (_: Throwable) {
+            }
+            if (scheduleRetries) schedulePendingFaceRetries(identity)
+            HLog.limWithSummary("face_pending_${identity.fileKey}", 6) {
+                "face pending (config not ready) card=${identity.fileKey} root=${root.javaClass.simpleName}"
+            }
+            return
+        }
+        try {
+            pendingFaceRoots.remove(root)
+        } catch (_: Throwable) {
+        }
         val views = collectFaceImageViews(root)
         if (views.isEmpty()) return
         for ((view, _) in views) {
@@ -932,6 +968,50 @@ object FaceHookEngine {
         HLog.limWithSummary("apply_${identity.fileKey}", 5) {
             "applied face ${identity.fileKey} v=${resolved.version} to ${views.size} view(s): " +
                 views.joinToString(",") { it.second }
+        }
+    }
+
+    private fun schedulePendingFaceRetries(identity: CardIdentity) {
+        for (delay in FACE_RETRY_DELAYS_MS) {
+            try {
+                mainHandler.postDelayed({
+                    try {
+                        retryPendingFaces()
+                    } catch (_: Throwable) {
+                    }
+                }, delay)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    /** Re-applies custom faces to still-attached pending roots once config becomes available. */
+    private fun retryPendingFaces() {
+        val snapshot: List<Pair<View, CardIdentity>> = try {
+            synchronized(pendingFaceRoots) {
+                pendingFaceRoots.entries.mapNotNull { entry ->
+                    val r = entry.key
+                    val i = entry.value
+                    if (r.isAttachedToWindow) r to i else null
+                }
+            }
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        var applied = 0
+        for ((root, identity) in snapshot) {
+            try {
+                if (ProviderClient.resolve(identity.type, identity.id) != null) {
+                    applyFaceToRoot(root, identity, scheduleRetries = false)
+                    applied++
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        if (snapshot.isNotEmpty()) {
+            HLog.limWithSummary("face_retry", 6) {
+                "pending face retry: ${snapshot.size} root(s), applied=$applied"
+            }
         }
     }
 

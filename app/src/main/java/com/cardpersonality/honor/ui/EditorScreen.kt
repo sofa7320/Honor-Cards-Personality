@@ -650,8 +650,14 @@ fun EditorScreen(
                         }
                     }
                 }
+                val previewWidth = previewImage?.width ?: 0
+                val exportScale = if (previewWidth <= 0) {
+                    6
+                } else {
+                    (previewWidth.toFloat() / 336f).roundToInt().coerceIn(2, 6)
+                }
                 Text(
-                    text = "圆角 12dp · 比例 336 : 208 · 导出 1008 × 624",
+                    text = "圆角 12dp · 比例 336 : 208 · 导出 ${336 * exportScale} × ${208 * exportScale}（${exportScale}x）",
                     style = MiuixTheme.textStyles.footnote2,
                     color = MiuixTheme.colorScheme.onBackgroundVariant,
                     modifier = Modifier
@@ -1040,6 +1046,8 @@ private fun ImageTab(
             value = cfg.scale,
             defaultValue = 1f,
             valueRange = 0.4f..4f,
+            unit = "x",
+            inputDecimals = 2,
             onValueChange = { onCfgChange(cfg.copy(scale = it)) },
         )
         LabeledSlider(
@@ -1048,6 +1056,8 @@ private fun ImageTab(
             value = cfg.offsetX,
             defaultValue = 0f,
             valueRange = -0.5f..0.5f,
+            unit = "%",
+            inputMultiplier = 100f,
             onValueChange = { onCfgChange(cfg.copy(offsetX = it)) },
         )
         LabeledSlider(
@@ -1056,6 +1066,8 @@ private fun ImageTab(
             value = cfg.offsetY,
             defaultValue = 0f,
             valueRange = -0.5f..0.5f,
+            unit = "%",
+            inputMultiplier = 100f,
             onValueChange = { onCfgChange(cfg.copy(offsetY = it)) },
         )
     }
@@ -1346,6 +1358,7 @@ private fun SelectedStickerEditor(
                 value = spec.sizeDp,
                 defaultValue = 24f,
                 valueRange = 6f..120f,
+                unit = "",
                 onValueChange = { onCfgChange(spec.copy(sizeDp = it)) },
             )
         } else {
@@ -1355,6 +1368,8 @@ private fun SelectedStickerEditor(
                 value = spec.w,
                 defaultValue = 0.5f,
                 valueRange = 0.05f..2.0f,
+                unit = "%",
+                inputMultiplier = 100f,
                 onValueChange = { onCfgChange(spec.copy(w = it)) },
             )
             SwitchPreference(
@@ -1381,6 +1396,7 @@ private fun SelectedStickerEditor(
                 value = spec.fontWeight.toFloat(),
                 defaultValue = 700f,
                 valueRange = 100f..900f,
+                unit = "",
                 onValueChange = {
                     val quantized = ((it / 100f).roundToInt() * 100).coerceIn(100, 900)
                     onCfgChange(spec.copy(fontWeight = quantized))
@@ -1415,6 +1431,7 @@ private fun SelectedStickerEditor(
                     value = spec.glowRadius,
                     defaultValue = 8f,
                     valueRange = 1f..30f,
+                    unit = "",
                     onValueChange = { onCfgChange(spec.copy(glowRadius = it)) },
                 )
             }
@@ -1437,6 +1454,8 @@ private fun SelectedStickerEditor(
                     value = spec.strokeWidth,
                     defaultValue = 2f,
                     valueRange = 0.5f..12f,
+                    unit = "",
+                    inputDecimals = 1,
                     onValueChange = { onCfgChange(spec.copy(strokeWidth = it)) },
                 )
             }
@@ -1448,10 +1467,11 @@ private fun SelectedStickerEditor(
             valueText = "${spec.rot.roundToInt()}°",
             value = spec.rot,
             defaultValue = 0f,
-            valueRange = -360f..360f,
-            keyPoints = (-360..360 step 90).map { it.toFloat() },
-            // 0.016 of the 720° range ≈ 11.5° of magnetic slowdown around each 90° multiple.
-            magnetThreshold = 0.016f,
+            valueRange = -270f..270f,
+            keyPoints = (-270..270 step 90).map { it.toFloat() },
+            // 0.007 of the 540° range ≈ 3.8° of light magnetic slowdown around each 90° multiple.
+            magnetThreshold = 0.007f,
+            unit = "°",
             onValueChange = { raw ->
                 val nearest90 = (raw / 90f).roundToInt() * 90f
                 val snapped = if (abs(raw - nearest90) <= ROTATION_SNAP_DEGREES) nearest90 else raw
@@ -1474,6 +1494,8 @@ private fun SelectedStickerEditor(
             value = spec.alpha,
             defaultValue = 1f,
             valueRange = 0.05f..1f,
+            unit = "%",
+            inputMultiplier = 100f,
             onValueChange = { onCfgChange(spec.copy(alpha = it)) },
         )
         Row(
@@ -1880,7 +1902,12 @@ private fun LabeledSlider(
     defaultValue: Float,
     valueRange: ClosedFloatingPointRange<Float>,
     keyPoints: List<Float> = listOf(defaultValue),
-    magnetThreshold: Float = 0.04f,
+    magnetThreshold: Float = 0.018f,
+    /** Unit suffix used by the numeric-input dialog (e.g. "°", "%"). */
+    unit: String = "",
+    /** Displayed input = value * inputMultiplier (e.g. 100 for fractions). */
+    inputMultiplier: Float = 1f,
+    inputDecimals: Int = 0,
     onValueChange: (Float) -> Unit,
     onValueChangeFinished: ((Float) -> Unit)? = null,
 ) {
@@ -1890,6 +1917,7 @@ private fun LabeledSlider(
     var trackWidthPx by remember { mutableIntStateOf(0) }
     var lastValue by remember { mutableStateOf(value) }
     LaunchedEffect(value) { lastValue = value }
+    var showInputDialog by remember { mutableStateOf(false) }
 
     val points = keyPoints.ifEmpty { listOf(defaultValue) }
     val span = (valueRange.endInclusive - valueRange.start).coerceAtLeast(0.0001f)
@@ -1900,6 +1928,9 @@ private fun LabeledSlider(
     var insideKeyPoint by remember { mutableStateOf(false) }
     var lastEndTickAt by remember { mutableLongStateOf(0L) }
     val latestOnFinish by rememberUpdatedState(onValueChangeFinished)
+
+    fun displayOf(raw: Float): String =
+        String.format(java.util.Locale.US, "%.${inputDecimals}f", raw * inputMultiplier)
 
     fun emit(newValue: Float) {
         val coerced = newValue.coerceIn(valueRange.start, valueRange.endInclusive)
@@ -1952,10 +1983,15 @@ private fun LabeledSlider(
                 )
             }
             Spacer(Modifier.width(6.dp))
+            // Tap the value to type an exact number instead of dragging.
             Text(
                 text = valueText,
                 style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.onBackgroundVariant,
+                color = MiuixTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable { showInputDialog = true }
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
             )
         }
         Spacer(Modifier.height(2.dp))
@@ -2003,6 +2039,75 @@ private fun LabeledSlider(
             // We fire the key-point haptics ourselves (Miuix Step needs steps/snap points).
             hapticEffect = SliderDefaults.SliderHapticEffect.None,
         )
+    }
+
+    if (showInputDialog) {
+        val rangeHint = "范围：" + displayOf(valueRange.start) + unit + " ~ " +
+            displayOf(valueRange.endInclusive) + unit
+        var inputText by remember(showInputDialog) { mutableStateOf(displayOf(value)) }
+        var errorText by remember(showInputDialog) { mutableStateOf<String?>(null) }
+        PanelDialog(
+            title = "输入$title",
+            summary = rangeHint,
+            onDismissRequest = { showInputDialog = false },
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                TextField(
+                    value = inputText,
+                    onValueChange = {
+                        inputText = it
+                        errorText = null
+                    },
+                    label = "$title$unit",
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (errorText != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = errorText!!,
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.error,
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = { showInputDialog = false },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(),
+                    ) { Text("取消") }
+                    Button(
+                        onClick = {
+                            val normalized = inputText.trim()
+                                .replace('，', '.')
+                                .replace("＋", "+")
+                                .replace("－", "-")
+                            val parsed = normalized.toFloatOrNull()
+                            if (parsed == null || !parsed.isFinite()) {
+                                errorText = "请输入有效数字（$rangeHint）"
+                            } else {
+                                val raw = parsed / inputMultiplier
+                                val clamped = raw.coerceIn(
+                                    valueRange.start,
+                                    valueRange.endInclusive,
+                                )
+                                emit(clamped)
+                                showInputDialog = false
+                                if (abs(clamped - raw) > 0.000001f) {
+                                    android.widget.Toast.makeText(
+                                        hapticsContext,
+                                        "已按范围限制为 " + displayOf(clamped) + unit,
+                                        android.widget.Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColorsPrimary(),
+                    ) { Text("确定") }
+                }
+            }
+        }
     }
 }
 
@@ -2251,6 +2356,12 @@ private fun List<StickerSpec>.move(from: Int, to: Int): List<StickerSpec> {
     list.add(to, item)
     return list
 }
+
+
+
+
+
+
 
 
 

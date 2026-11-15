@@ -31,7 +31,7 @@ import kotlin.math.max
  * Layout under `<filesDir>`:
  *  - config.json                      [ConfigStore] JSON (global version + cards + type defaults)
  *  - report.json                      cards reported by the hook: {"updatedAt":n,"cards":[...]}
- *  - exports/<sha256hex(key)>.jpg     final 1008x624 JPEG served through the provider
+ *  - exports/<sha256hex(key)>.jpg     final 2016x1248 JPEG served through the provider
  *  - images/img_*.jpg, stk_*.png      imported source images / image stickers
  *
  * Paths stored in JSON are relative to filesDir; runtime [CardFaceConfig] paths are absolute.
@@ -277,7 +277,7 @@ object FaceRepository {
         val cfg = if (key.id == CardKey.TYPE_DEFAULT_ID) store.types[key.type] else store.cards[key.fileKey]
         if (cfg == null || !cfg.hasCustomFace) return false
         val out = exportFile(ctx, key.fileKey)
-        return FaceRenderer.renderToFile(ctx, cfg, out, EXPORT_WIDTH, EXPORT_HEIGHT)
+        return FaceRenderer.renderToFile(ctx, cfg, out)
     }
 
     // ------------------------------------------------------------------ provider helpers
@@ -485,7 +485,7 @@ object FaceRepository {
                 if (png) {
                     bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
                 } else {
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 92, stream)
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
                 }
                 stream.flush()
             }
@@ -528,21 +528,42 @@ object FaceRepository {
         return if (cached.isFile && cached.length() > 0L) cached else null
     }
 
-    /** Returns the local current-face snapshot, downloading [CardInfo.faceUrl] when absent. */
-    fun ensureOriginalFace(ctx: Context, card: CardInfo): File? {
-        originalSnapshotFile(ctx, card.type, card.key.id)?.let { return it }
-        val url = card.faceUrl
-        if (url.isNullOrBlank() || card.key.id == CardKey.TYPE_DEFAULT_ID) return null
+    /** Long side in pixels of an image file (0 when unreadable). */
+    private fun longSideOf(file: File): Int {
         return try {
-            val target = File(
-                cacheOriginalsDir(ctx),
-                Hashing.sha256Hex(card.key.fileKey) + ".jpg",
-            )
-            downloadFaceToFile(url, target)
-            target.takeIf { it.isFile && it.length() > 0L }
-        } catch (t: Throwable) {
-            Log.w(TAG, "original face download failed url=$url", t)
-            null
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, bounds)
+            max(bounds.outWidth, bounds.outHeight).coerceAtLeast(0)
+        } catch (_: Throwable) {
+            0
+        }
+    }
+
+    /**
+     * Returns the local current-face snapshot, downloading [CardInfo.faceUrl] when absent.
+     * Round 9: when a CDN URL exists we keep a NATIVE-resolution download and prefer whichever of
+     * (hook snapshot / CDN download) is sharper, so "use current face as base" is not blurry.
+     */
+    fun ensureOriginalFace(ctx: Context, card: CardInfo): File? {
+        val hooked = originalSnapshotFile(ctx, card.type, card.key.id)
+        val url = card.faceUrl
+        if (url.isNullOrBlank() || card.key.id == CardKey.TYPE_DEFAULT_ID) return hooked
+        val sha = Hashing.sha256Hex(card.key.fileKey)
+        val downloaded = File(cacheOriginalsDir(ctx), "$sha.jpg")
+        if (!downloaded.isFile || downloaded.length() <= 0L) {
+            try {
+                downloadFaceToFile(url, downloaded)
+            } catch (t: Throwable) {
+                Log.w(TAG, "original face download failed url=$url", t)
+            }
+        }
+        val hookSide = hooked?.let { longSideOf(it) } ?: 0
+        val dlSide = if (downloaded.isFile) longSideOf(downloaded) else 0
+        return when {
+            dlSide > hookSide -> downloaded
+            hooked != null -> hooked
+            downloaded.isFile && downloaded.length() > 0L -> downloaded
+            else -> null
         }
     }
 
@@ -575,9 +596,11 @@ object FaceRepository {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return
+            // Round 9: keep the wallet-original face at native resolution (no 1024 px cap) so
+            // "use current face as base" stays sharp; only very large images are downsampled.
             var sample = 1
             val longSide = max(bounds.outWidth, bounds.outHeight)
-            while (longSide / (sample * 2) >= 1024) sample *= 2
+            while (longSide / (sample * 2) >= 4096) sample *= 2
             val opts = BitmapFactory.Options().apply {
                 inSampleSize = sample
                 inPreferredConfig = Bitmap.Config.ARGB_8888
@@ -586,7 +609,7 @@ object FaceRepository {
             target.parentFile?.mkdirs()
             val tmp = File(target.absolutePath + ".tmp")
             FileOutputStream(tmp).use { stream ->
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 88, stream)
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
                 stream.flush()
             }
             bitmap.recycle()
@@ -604,17 +627,53 @@ object FaceRepository {
 
     /** Copies the wallet's current face snapshot into files/images so it can be used as a source. */
     fun useOriginalAsSource(ctx: Context, type: String, id: String): ImportResult {
-        val snapshot = originalSnapshotFile(ctx, type, id)
+        // Round 9: prefer the sharpest original we have (native-res CDN copy may beat an old
+        // low-resolution hook snapshot captured by earlier builds).
+        val sha = Hashing.sha256Hex(CardKey(type, id).fileKey)
+        val candidates = listOfNotNull(
+            File(originalsDir(ctx), "$sha.jpg").takeIf { it.isFile && it.length() > 0L },
+            File(cacheOriginalsDir(ctx), "$sha.jpg").takeIf { it.isFile && it.length() > 0L },
+        ).sortedByDescending { longSideOf(it) }
+        val snapshot = candidates.firstOrNull()
             ?: return ImportResult(null, "尚未获取到钱包当前卡面")
         return try {
-            val bitmap = BitmapFactory.decodeFile(snapshot.absolutePath)
-                ?: return ImportResult(null, "当前卡面解码失败")
-            val path = writeBitmapToImages(ctx, bitmap, png = false, prefix = "img_current")
-            bitmap.recycle()
-            if (path != null) ImportResult(path) else ImportResult(null, "保存图片失败")
+            // Round-9b: copy the native snapshot BYTES into files/images (no decode/re-encode, no
+            // resample) so a 672x416 wallet asset stays exactly 672x416 with its original quality.
+            val dir = File(ctx.filesDir, IMAGE_DIR).apply { mkdirs() }
+            val png = fileLooksLikePng(snapshot)
+            val ext = if (png) "png" else "jpg"
+            val target = File(
+                dir,
+                "img_current_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}.$ext",
+            )
+            val tmp = File(target.absolutePath + ".tmp")
+            snapshot.inputStream().use { input ->
+                FileOutputStream(tmp).use { output -> input.copyTo(output) }
+            }
+            if (!tmp.renameTo(target)) {
+                target.delete()
+                tmp.renameTo(target)
+            }
+            if (target.isFile && target.length() > 0L) {
+                ImportResult(target.absolutePath)
+            } else {
+                ImportResult(null, "保存图片失败")
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "use original as source failed", t)
             ImportResult(null, friendlyImportError(t))
+        }
+    }
+
+    /** True when the file's first bytes are the PNG magic (snapshots may be PNG or JPEG). */
+    private fun fileLooksLikePng(file: File): Boolean {
+        return try {
+            val head = ByteArray(8)
+            file.inputStream().use { it.read(head) }
+            head[0] == 0x89.toByte() && head[1] == 0x50.toByte() &&
+                head[2] == 0x4E.toByte() && head[3] == 0x47.toByte()
+        } catch (_: Throwable) {
+            false
         }
     }
 
@@ -1042,3 +1101,5 @@ object FaceRepository {
 
     internal const val EMPTY_REPORT = "{\"updatedAt\":0,\"cards\":[]}"
 }
+
+

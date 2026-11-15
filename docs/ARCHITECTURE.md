@@ -166,9 +166,12 @@ re-enter hooked getters.
   - `0.2.4` — round 8: free sticker placement (drag clamp removed for oversized/long image
     stickers; any cx/cy allowed, preview and export share the same values) + font picker
     language annotations (西文/中文/自定义)
+  - `0.2.5` — round 9: cold-start quick-card fix (wallet-local config/face caches + pending
+    face retry), higher-resolution original-face capture / current-face base, rotation ±270,
+    weaker slider magnet, numeric input dialog, 2x render resolution (2016×1248)
 - Release APKs are frozen as `work/module/poc/card-personality-v<N>-final.apk`; the current
-  delivery build is `v31-final` (versionName 0.2.4 / versionCode 1), verified with
-  `aapt2 dump badging` (`versionCode='1' versionName='0.2.4'`).
+  delivery build is `v32-final` (versionName 0.2.5 / versionCode 1), verified with
+  `aapt2 dump badging` (`versionCode='1' versionName='0.2.5'`).
 
 Round-4 model additions (owned by ui-dev; JSON is backward-compatible: every new field has a
 default, and the hook layer never parses sticker/config geometry — it only uses `version` and
@@ -282,3 +285,42 @@ Note for testing: after a fresh `adb install` the panel app is in Android's *sto
 wallet's provider calls fail with `IllegalArgumentException: Unknown authority
 com.cardpersonality.honor.face`. Launch the panel once after install (then restart the wallet) to
 make the config/provider channel reachable.
+## 13. Round-9: cold-start quick card + original-face quality (0.2.5)
+
+### 13.1 Double-press-power cold start showed the original face
+`SwipeCardActivity` (Honor quick card) binds the card face during a cold wallet start, often before
+the panel app's provider is reachable (panel force-stopped, or provider process still starting).
+Previously `applyFaceToRoot()` simply returned when `resolve() == null` and the page never re-bound,
+so the original face stayed visible.
+
+Fixes (all in `hook/`):
+
+1. **Wallet-local config cache** — every successful config read is persisted as JSON in the wallet
+   process cache (`<wallet cacheDir>/cardpersonality_config_cache.json`). When provider IPC fails
+   ("Unknown authority", "No content provider", …), `ProviderClient` falls back to this cached
+   snapshot (`PROVIDER_CACHE …`), so `resolve()` works during cold start.
+2. **Wallet-local face JPEG cache** — `FaceImageLoader` caches the provider JPEG bytes in
+   `<wallet cacheDir>/cardpersonality_faces/<sha256(fileKey)>_v<version>.jpg`. If the content URI
+   cannot be opened (provider unavailable) the cached JPEG is decoded instead
+   (`face loaded from wallet disk cache …`). This lets an already-used custom face render on the
+   quick card before the panel app is reachable.
+3. **Pending face roots + retries** — `applyFaceToRoot()` records `(root, identity)` in
+   `pendingFaceRoots` when config is not ready and schedules retries at 300/800/1500/2500 ms; still
+   attached roots are re-applied. `ProviderClient.addConfigListener` also fires `retryPendingFaces()`
+   on the main thread as soon as a new config snapshot arrives.
+4. **Transient provider backoff** — "Unknown authority"/"Unknown URL" failures use a 1.2 s retry
+   (up to 20 attempts) instead of the normal 30 s backoff, so the panel app becoming reachable is
+   picked up quickly.
+5. Quick-card coverage confirmed: `SwipeCardStackView#setAdapter` (H13) and `z79#d/f` (swipe adapter
+   bind/data) hooks are installed; they now hit the pending/retry path instead of giving up.
+
+### 13.2 "Use current face as base" was blurry
+- `FaceCapture` now captures the wallet `ImageView` drawable at its **intrinsic full resolution**
+  (long side up to 2560 px, previously downscaled to 640), JPEG quality **95** (was 85), and
+  `FaceProvider` accepts originals up to **3 MB** (was 512 KB). One capture per card per process,
+  only when no custom face is configured.
+- `FaceRepository.ensureOriginalFace` keeps CDN downloads at **native resolution** (cap 4096 px,
+  JPEG 95) instead of downsampling to ~1024 px, and returns whichever of (hook snapshot / CDN
+  download) is sharper.
+- `useOriginalAsSource` picks the sharpest available original before writing the source image, and
+  the source-image writer uses JPEG quality 95.

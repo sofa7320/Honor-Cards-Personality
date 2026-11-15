@@ -26,10 +26,12 @@ import java.util.concurrent.Executors
  * JPEG <= 512 KB (provider enforces too); type whitelist only.
  */
 object FaceCapture {
-    private const val MAX_STORED_BYTES = 512 * 1024
-    private const val MAX_LONG_SIDE = 640
+    private const val MAX_STORED_BYTES = 3 * 1024 * 1024
+    private const val MAX_LONG_SIDE = 2560 // only a safety cap for huge drawables
     private const val MAX_ATTEMPTS = 30
-    private const val JPEG_QUALITY = 85
+    /** Round-9b: lossless PNG for small native assets (e.g. 672x416 wallet art), else JPEG q100. */
+    private const val PNG_MAX_PIXELS = 1_600_000L
+    private const val JPEG_QUALITY_HQ = 100
 
     private val TYPE_WHITELIST = setOf(
         CardTypesBridge.TRANSIT, CardTypesBridge.BANK, CardTypesBridge.ACCESS,
@@ -116,8 +118,8 @@ object FaceCapture {
                 return
             }
             if (!ProviderClient.faceSnapshotNeeded(identity.type, identity.id)) return
-            scaled = scaleDown(bitmap)
-            val bytes = encodeJpeg(scaled)
+            scaled = scaleDown(bitmap) // no-op for native assets (safety cap only)
+            val bytes = encodeSnapshot(scaled)
             if (bytes == null || bytes.size > MAX_STORED_BYTES) {
                 HLog.limWithSummary("capture_skip", 3) {
                     "original snapshot skipped for ${identity.fileKey} (${bytes?.size ?: 0} bytes)"
@@ -180,23 +182,56 @@ object FaceCapture {
         }
     }
 
-    private fun encodeJpeg(bitmap: Bitmap): ByteArray? {
+    /**
+     * Round-9b: keep the captured original as close to lossless as possible so the panel can use it
+     * as a base without visible degradation:
+     *  - small native assets (<=1.6 MP, e.g. the wallet's 672x416 art) are saved as PNG (lossless);
+     *  - otherwise JPEG quality 100, falling back to lower quality only to satisfy the size cap;
+     *  - the bitmap is never upscaled and only safety-scaled when the encode cannot fit the cap.
+     */
+    private fun encodeSnapshot(bitmap: Bitmap): ByteArray? {
+        val pixels = bitmap.width.toLong() * bitmap.height.toLong()
+        if (pixels in 1..PNG_MAX_PIXELS) {
+            pngBytes(bitmap)?.let { if (it.size <= MAX_STORED_BYTES) return it }
+        }
+        for (quality in intArrayOf(JPEG_QUALITY_HQ, 95, 90, 85)) {
+            val bytes = jpegBytes(bitmap, quality) ?: continue
+            if (bytes.size <= MAX_STORED_BYTES) return bytes
+        }
+        return jpegBytes(bitmap, 85)
+    }
+
+    private fun pngBytes(bitmap: Bitmap): ByteArray? {
         return try {
+            val flat = flattenForOpaqueEncoding(bitmap, Bitmap.CompressFormat.PNG)
             val out = ByteArrayOutputStream()
-            val flat = if (bitmap.hasAlpha()) {
-                val bg = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
-                val canvas = Canvas(bg)
-                canvas.drawColor(Color.WHITE)
-                canvas.drawBitmap(bitmap, 0f, 0f, null)
-                bg
-            } else {
-                bitmap
-            }
-            flat.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+            flat.compress(Bitmap.CompressFormat.PNG, 100, out)
             if (flat !== bitmap) flat.recycle()
             out.toByteArray()
         } catch (_: Throwable) {
             null
         }
+    }
+
+    private fun jpegBytes(bitmap: Bitmap, quality: Int): ByteArray? {
+        return try {
+            val flat = flattenForOpaqueEncoding(bitmap, Bitmap.CompressFormat.JPEG)
+            val out = ByteArrayOutputStream()
+            flat.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            if (flat !== bitmap) flat.recycle()
+            out.toByteArray()
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** JPEG keeps no alpha: composite transparent pixels on white first. */
+    private fun flattenForOpaqueEncoding(bitmap: Bitmap, format: Bitmap.CompressFormat): Bitmap {
+        if (format != Bitmap.CompressFormat.JPEG || !bitmap.hasAlpha()) return bitmap
+        val bg = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bg)
+        canvas.drawColor(Color.WHITE)
+        canvas.drawBitmap(bitmap, 0f, 0f, null)
+        return bg
     }
 }

@@ -38,8 +38,8 @@ object Contract {
     const val EXTRA_ERROR = "error"
 
     /** Card face canvas used by the provider/exports (3x of 336x208 dp). */
-    const val FACE_WIDTH = 1008
-    const val FACE_HEIGHT = 624
+    const val FACE_WIDTH = 2016
+    const val FACE_HEIGHT = 1248
 
     /** 336:208 */
     const val FACE_ASPECT = 1.6153846f
@@ -54,3 +54,4 @@ object Contract {
     fun cardUri(type: String, id: String, config: CardFaceConfig): Uri =
         cardUri(type, id, config.version)
 }
+

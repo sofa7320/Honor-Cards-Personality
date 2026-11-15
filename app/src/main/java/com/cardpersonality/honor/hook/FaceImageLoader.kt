@@ -10,6 +10,7 @@ import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
 import android.widget.ImageView
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
@@ -49,17 +50,54 @@ object FaceImageLoader {
         }
         val key = cacheKey(face)
         executor.execute {
-            val bitmap = try {
+            val diskFile = diskCacheFile(ctx, face)
+            var bitmap: Bitmap? = null
+            try {
                 ctx.contentResolver.openInputStream(face.contentUri())?.use { stream ->
-                    BitmapFactory.decodeStream(stream)
+                    val bytes = stream.readBytes()
+                    if (bytes.isNotEmpty()) {
+                        // Cache the provider JPEG locally so a cold start with the panel app
+                        // force-stopped/starting can still render the face (quick-card fix).
+                        try {
+                            diskFile.parentFile?.mkdirs()
+                            val tmp = File(diskFile.absolutePath + ".tmp")
+                            tmp.writeBytes(bytes)
+                            if (!tmp.renameTo(diskFile)) {
+                                diskFile.delete()
+                                tmp.renameTo(diskFile)
+                            }
+                        } catch (_: Throwable) {
+                        }
+                        bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    }
                 }
             } catch (t: Throwable) {
-                HLog.w("face load failed ${face.fileKey}: ${t.javaClass.simpleName}: ${t.message}")
-                null
+                HLog.w("face load failed ${face.fileKey}: ${t.javaClass.simpleName}: ${t.message}; trying disk cache")
             }
-            if (bitmap != null) cache[key] = bitmap
-            main.post { onReady(bitmap) }
+            if (bitmap == null) {
+                bitmap = try {
+                    if (diskFile.isFile && diskFile.length() > 0L) {
+                        BitmapFactory.decodeFile(diskFile.absolutePath)
+                    } else {
+                        null
+                    }
+                } catch (_: Throwable) {
+                    null
+                }
+                if (bitmap != null) {
+                    HLog.i("face loaded from wallet disk cache ${face.fileKey} v=${face.version}")
+                }
+            }
+            val loaded: Bitmap? = bitmap
+            if (loaded != null) cache[key] = loaded
+            main.post { onReady(loaded) }
         }
+    }
+
+    private fun diskCacheFile(ctx: Context, face: ProviderClient.ResolvedFace): File {
+        val dir = File(ctx.cacheDir, "cardpersonality_faces")
+        val sha = com.cardpersonality.honor.data.Hashing.sha256Hex(face.fileKey)
+        return File(dir, sha + "_v" + face.version + ".jpg")
     }
 
     private val roundedCache = ConcurrentHashMap<Int, Bitmap>()

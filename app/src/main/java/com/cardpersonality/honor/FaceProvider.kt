@@ -260,7 +260,7 @@ class FaceProvider : ContentProvider() {
         const val ORIGINAL_DIR = "originals"
 
         /** Hard cap for one stored snapshot (hook sends long-side<=640 JPEG q85). */
-        private const val ORIGINAL_MAX_BYTES = 512 * 1024
+        private const val ORIGINAL_MAX_BYTES = 3 * 1024 * 1024
 
         private const val EMPTY_CONFIG =
             "{\"version\":0,\"updatedAt\":0,\"cards\":{},\"types\":{}}"

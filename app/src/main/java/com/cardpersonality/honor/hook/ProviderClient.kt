@@ -8,6 +8,7 @@ import android.os.Looper
 import com.cardpersonality.honor.data.CardKey
 import com.cardpersonality.honor.data.Hashing
 import org.json.JSONObject
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -52,6 +53,12 @@ object ProviderClient {
     /** After any provider IPC failure, no further IPC for this long. */
     private const val FAILURE_BACKOFF_MS = 30_000L
 
+    /** Short retry window for transient cold-start errors (provider app in stopped state). */
+    private const val TRANSIENT_BACKOFF_MS = 1_200L
+
+    /** Last good config JSON cached in the wallet process cache (cold-start fallback). */
+    private const val CONFIG_CACHE_FILE = "cardpersonality_config_cache.json"
+
     /** One background worker for all provider IPC scheduled from hook code. */
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "cardpersonality-provider-client").apply { isDaemon = true }
@@ -60,6 +67,12 @@ object ProviderClient {
     private val prefetchScheduled = AtomicBoolean(false)
 
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** Callbacks fired on the MAIN thread when a new config snapshot arrives (cold-start fix). */
+    private val configListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+
+    /** Consecutive transient provider failures ("Unknown authority" while app is stopped). */
+    @Volatile private var transientFailures = 0
 
     /** One resolved custom face for display. */
     data class ResolvedFace(val fileKey: String, val version: Int) {
@@ -116,6 +129,27 @@ object ProviderClient {
         }
     }
 
+    /** Registers a main-thread callback invoked whenever a NEW config snapshot arrives. */
+    fun addConfigListener(listener: () -> Unit) {
+        try {
+            configListeners.add(listener)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun notifyConfigListeners() {
+        for (listener in configListeners) {
+            try {
+                mainHandler.post {
+                    try {
+                        listener()
+                    } catch (_: Throwable) {
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }
+    }
     /**
      * Forced background config refresh followed by [onDone] on the MAIN thread.
      * Used by config-change handling so no provider IPC ever runs on the wallet main thread.
@@ -173,26 +207,32 @@ object ProviderClient {
             ctx.contentResolver.call(Uri.parse(BASE_URI), CALL_CONFIG, null, null)
         } catch (t: Throwable) {
             onFailure("call(config) threw: ${t.javaClass.simpleName}: ${t.message}")
-            return cached
+            return loadCachedConfig(ctx, cached)
         }
         if (bundle == null) {
             onFailure("call(config) returned null bundle")
-            return cached
+            return loadCachedConfig(ctx, cached)
         }
         val json = bundle.getString(EXTRA_JSON)
         if (json.isNullOrEmpty()) {
             onFailure("call(config) returned empty json")
-            return cached
+            return loadCachedConfig(ctx, cached)
         }
         val parsed = parse(json, bundle.getInt(EXTRA_VERSION, 0))
         if (parsed == null) {
             onFailure("call(config) json parse failed")
-            return cached
+            return loadCachedConfig(ctx, cached)
         }
+        val previousVersion = snapshot?.globalVersion
         snapshot = parsed
         snapshotAt = now
         lastFailure = null
         unavailableUntil = 0L
+        transientFailures = 0
+        saveCachedConfig(ctx, json)
+        if (previousVersion == null || previousVersion != parsed.globalVersion) {
+            notifyConfigListeners()
+        }
         if (loggedOkVersion != parsed.globalVersion) {
             loggedOkVersion = parsed.globalVersion
             HLog.i("PROVIDER_OK config version=${parsed.globalVersion} " +
@@ -310,6 +350,40 @@ object ProviderClient {
     }
 
     /**
+     * Cold-start fallback: read the last good config JSON from the wallet process cache when the
+     * provider is unavailable (e.g. panel app force-stopped / still starting). This lets the
+     * double-press-power quick card show the custom face immediately after a cold start.
+     */
+    private fun loadCachedConfig(ctx: Context, cached: Snapshot?): Snapshot? {
+        if (cached != null) return cached
+        return try {
+            val file = File(ctx.cacheDir, CONFIG_CACHE_FILE)
+            if (!file.isFile || file.length() <= 0L) return null
+            val json = file.readText(Charsets.UTF_8)
+            val parsed = parse(json, 0) ?: return null
+            snapshot = parsed
+            snapshotAt = System.currentTimeMillis()
+            HLog.i("PROVIDER_CACHE config from wallet cache (provider unavailable) v=${parsed.globalVersion}")
+            parsed
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun saveCachedConfig(ctx: Context, json: String) {
+        try {
+            val file = File(ctx.cacheDir, CONFIG_CACHE_FILE)
+            file.parentFile?.mkdirs()
+            val tmp = File(file.absolutePath + ".tmp")
+            tmp.writeText(json, Charsets.UTF_8)
+            if (!tmp.renameTo(file)) {
+                file.delete()
+                tmp.renameTo(file)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+    /**
      * Records a provider IPC failure: enters a 30 s no-IPC backoff, logs at most once per window.
      * Never throws.
      */
@@ -317,10 +391,27 @@ object ProviderClient {
         val now = System.currentTimeMillis()
         lastFailure = reason
         snapshotAt = now
-        unavailableUntil = now + FAILURE_BACKOFF_MS
-        if (now - lastFailureLogAt >= FAILURE_BACKOFF_MS) {
+        // Cold-start: the panel app may be in Android stopped state ("Unknown authority") until it
+        // is launched; that is transient, so retry soon instead of waiting 30 s.
+        val transient = reason.contains("Unknown authority", ignoreCase = true) ||
+            reason.contains("Unknown URL", ignoreCase = true)
+        val backoff = if (transient) TRANSIENT_BACKOFF_MS else FAILURE_BACKOFF_MS
+        unavailableUntil = now + backoff
+        if (now - lastFailureLogAt >= 5_000L) {
             lastFailureLogAt = now
-            HLog.w("PROVIDER_FAIL $reason (no provider IPC for ${FAILURE_BACKOFF_MS / 1000}s)")
+            HLog.w("PROVIDER_FAIL $reason (no provider IPC for ${backoff / 1000.0}s)")
+        }
+        if (transient && transientFailures < 20) {
+            transientFailures++
+            try {
+                mainHandler.postDelayed({
+                    try {
+                        prefetchAsync()
+                    } catch (_: Throwable) {
+                    }
+                }, backoff + 100L)
+            } catch (_: Throwable) {
+            }
         }
     }
 

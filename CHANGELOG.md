@@ -7,6 +7,21 @@
 
 （暂无）
 
+## [0.2.5] - 2026-11-16
+
+### 新增
+- **数值精准输入**：点击滑杆右侧数值弹出 Miuix 输入弹窗，显示允许范围；支持合法值、越界夹取、非法输入提示；覆盖字号/粗细/尺寸/旋转/透明度/发光/描边宽度等全部滑杆。
+- **自适应渲染分辨率**：按底图原始像素选择导出尺寸 —— 照片最高 2016×1248（6x），钱包原生 672×416 卡面按 672×416（2x）渲染，避免双重重采样造成的模糊；预览下方显示实际导出尺寸。
+- **以当前卡面为底图无损抓取**：按原生分辨率保存（小图 PNG、大图 JPEG q100），不缩放、不二次压缩。
+
+### 变更
+- 旋转范围由 ±360° 调整为 **-270° ~ +270°**（滑杆/手势/导出/吸附一致）。
+- 滑杆磁吸减弱（普通 0.018、旋转 0.007），保留吸附感但可精准控制。
+
+### 修复
+- **双击电源键冷启动显示原始卡面**：钱包进程内配置/卡面磁盘缓存 + Provider 失败回退 + pending 根延迟重试（300/800/1500/2500ms）+ 配置到达即时重应用。
+- 图片贴纸解码长边 768→1536，200% 放大更清晰。
+
 ## [0.2.4] - 2026-11-15
 
 ### 修复
@@ -72,7 +87,8 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
-[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.1...v0.2.2

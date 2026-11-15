@@ -19,6 +19,7 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Pure `android.graphics` geometry + composition for the card face.
@@ -27,7 +28,7 @@ import kotlin.math.min
  *  - [FaceRenderer] (final exported JPEG served to the wallet), and
  *  - the Compose preview (ui/components/CardFacePreview.kt) so preview == wallet result.
  *
- * Canvas is designed at 336x208 units (wallet aspect 1.6153846), exported at 3x = 1008x624.
+ * Canvas is designed at 336x208 units (wallet aspect 1.6153846), exported at 6x = 2016x1248.
  * No rounded corners are baked in: the wallet clips the image via HwCardView (12dp).
  */
 object FaceGeometry {
@@ -44,7 +45,7 @@ object FaceGeometry {
     /** Default image sticker width as a fraction of the card width. */
     const val BASE_STICKER_WIDTH = 0.4f
 
-    const val MAX_STICKER_ROTATION = 360f
+    const val MAX_STICKER_ROTATION = 270f
 
     /** Placement of the source image inside the card canvas, in canvas pixels. */
     data class Placement(
@@ -394,24 +395,48 @@ object FaceImageLoader {
  * Output is rectangular (the wallet applies its own 12dp rounded clip).
  */
 object FaceRenderer {
-    const val EXPORT_WIDTH = 1008
-    const val EXPORT_HEIGHT = 624
+    const val EXPORT_WIDTH = 2016
+    const val EXPORT_HEIGHT = 1248
     const val JPEG_QUALITY = 92
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
 
+    /**
+     * Adaptive export size: enough resolution to keep the base image at (at least) its native
+     * sharpness without an extra upscale/downscale cycle. The wallet renders its face from a
+     * 672×416-ish CDN image, so a 672×416 capture is exported at 672×416 (2x design) instead of
+     * being upscaled to 2016×1248 and downscaled by the wallet (two resamples → soft). Phone photos
+     * (≥2016px wide) still export at the full 6x = 2016×1248.
+     */
+    fun adaptiveExportSize(ctx: Context?, cfg: CardFaceConfig): android.util.Size? {
+        val image = FaceImageLoader.load(FaceImageLoader.resolvePath(ctx, cfg.imagePath))
+        val baseWidth = image?.width ?: 0
+        val scale = if (baseWidth <= 0) {
+            6
+        } else {
+            (baseWidth.toFloat() / FaceGeometry.DESIGN_WIDTH).roundToInt().coerceIn(2, 6)
+        }
+        return android.util.Size(FaceGeometry.DESIGN_WIDTH.toInt() * scale, FaceGeometry.DESIGN_HEIGHT.toInt() * scale)
+    }
+
     fun render(
         ctx: Context?,
         cfg: CardFaceConfig,
-        width: Int = EXPORT_WIDTH,
-        height: Int = EXPORT_HEIGHT,
+        width: Int = 0,
+        height: Int = 0,
     ): Bitmap? {
-        if (width <= 0 || height <= 0) return null
+        val (w, h) = if (width > 0 && height > 0) {
+            width to height
+        } else {
+            val size = adaptiveExportSize(ctx, cfg) ?: return null
+            size.width to size.height
+        }
+        if (w <= 0 || h <= 0) return null
         return try {
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
-            draw(ctx, cfg, canvas, width.toFloat(), height.toFloat())
+            draw(ctx, cfg, canvas, w.toFloat(), h.toFloat())
             bitmap
         } catch (_: Throwable) {
             null
@@ -423,8 +448,8 @@ object FaceRenderer {
         ctx: Context?,
         cfg: CardFaceConfig,
         outFile: File,
-        width: Int = EXPORT_WIDTH,
-        height: Int = EXPORT_HEIGHT,
+        width: Int = 0,
+        height: Int = 0,
     ): Boolean {
         val bitmap = render(ctx, cfg, width, height) ?: return false
         return try {
@@ -574,7 +599,7 @@ object FaceRenderer {
         height: Float,
     ) {
         val path = FaceImageLoader.resolvePath(ctx, spec.imagePath) ?: return
-        val image = FaceImageLoader.load(path, 768) ?: return
+        val image = FaceImageLoader.load(path, 1536) ?: return
         if (image.isRecycled || image.width <= 0) return
         val dstW = (spec.w.coerceIn(0.05f, 2f) * width).coerceAtLeast(8f)
         val dstH = dstW * image.height / image.width
@@ -639,6 +664,9 @@ object FaceRenderer {
 internal fun Float.safe(): Float = if (isNaN() || isInfinite()) 0f else this
 
 internal fun Int.clamp255(): Int = min(max(this, 0), 255)
+
+
+
 
 
 
