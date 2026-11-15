@@ -5,9 +5,11 @@
 
 > 一个基于 **LSPosed** 的荣耀钱包卡面自定义模块：用你自己的图片替换钱包卡片卡面，并在 Miuix 风格的编辑面板里自由排版（文字、图片贴纸、字体、描边、层级、ZIP 导入导出、隐藏钱包原生组件）。
 
-**English:** An LSPosed module that lets you replace card faces in HONOR Wallet with your own images, with a Miuix-styled editor (text/image stickers, fonts, outline, layers, ZIP import/export). Display-layer replacement only — the wallet app and its data are not modified.
+> **English:** An LSPosed module that lets you replace card faces in HONOR Wallet with your own images, with a Miuix-styled editor (text/image stickers, fonts, outline, layers, ZIP import/export). Display-layer replacement only — the wallet app and its data are not modified.
 
 License: [Apache-2.0](LICENSE) · 第三方声明: [NOTICE.md](NOTICE.md)
+
+软件VersionCode常驻1，以便于进行降级安装。但由于软件处于早期开发阶段，变更较多，故非必要情况下，**不建议**进行降级操作，降级操作可能会导致软件的部分功能出现问题。
 
 > ⚠️ 本模块仅改变**显示层**（替换 ImageView 渲染的内容），不会修改荣耀钱包的卡面资源、卡片数据或任何系统文件。需要 **root + LSPosed（Zygisk）**。使用风险自负，详见[免责声明](#免责声明)。
 
