@@ -235,3 +235,22 @@ pwsh -File scripts/build.ps1        # 默认 :app:assembleDebug
 - AndroidX Compose、Kotlin、jadx（逆向分析辅助）
 
 # 
+
+
+## 发布流程（维护者）
+
+本项目约定：**每次修改 ersionName 的版本更新，都必须同步发布到 GitHub Release。**
+
+1. 修改 pp/build.gradle.kts 的 ersionName（ersionCode 固定为 1，不要改）。
+2. 同步更新 [CHANGELOG.md](CHANGELOG.md)（[Unreleased] → 新版本号 + 日期），提交并推送 main。
+3. 打标签并推送，触发 release workflow：
+   `ash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   `
+4. .github/workflows/build.yml 的 
+elease job 会自动构建、生成 CardPersonality-vX.Y.Z.apk 与 .sha256，
+   并附带 NOTICE.md 发布 GitHub Release（Release 说明自动生成）。
+5. 发布后检查 Release 中的 APK 可下载、版本号正确（面板首页 X.Y.Z）。
+
+> 没有版本号变更的修复/文档/CI 提交只需推送 main（自动构建 artifact，不发 Release）。
