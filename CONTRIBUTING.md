@@ -124,6 +124,21 @@ chore: 构建/依赖/杂项
 - 不引入会收集/上传用户数据的依赖；本项目坚持本地处理。
 - 发现安全问题请通过 Issue 私密渠道或维护者邮箱联系，不要在公开 Issue 中贴出可被利用的细节。
 
+## 发版（维护者）
+
+- `versionCode` 永远为 1；只有 `versionName` 随版本递增。
+- 每次 `versionName` 变更时：更新 `CHANGELOG.md` → 提交推送 `main` → 打 tag 并推送：
+  ```bash
+  git tag vX.Y.Z
+  git push origin vX.Y.Z
+  ```
+- 推送 `v*` 标签后，Actions 的 `release` job 会：
+  - 使用仓库 secrets 解码 keystore，执行 `:app:assembleRelease`（**release 签名**）；
+  - 从 `CHANGELOG.md` 提取该版本小节生成 **Release 正文**（本次更新内容 + 安装说明 + 资产列表）；
+  - 发布 `CardPersonality-vX.Y.Z.apk`、`.sha256`、`NOTICE.md`。
+- 签名密钥与 secrets 配置见 [docs/RELEASE.md](docs/RELEASE.md)。
+- 发版后核对 Release 正文与 APK 版本号（面板首页显示 `vX.Y.Z`）。
+
 ## 许可证
 
 本项目以 [Apache License 2.0](LICENSE) 发布；第三方组件声明见 [NOTICE.md](NOTICE.md)。

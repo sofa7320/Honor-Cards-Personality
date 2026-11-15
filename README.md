@@ -182,7 +182,9 @@ pwsh -File scripts/build.ps1        # 默认 :app:assembleDebug
 - 贡献流程、代码约定、测试要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 - 版本变更见 [CHANGELOG.md](CHANGELOG.md)；架构与 hook 细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 - CI：[`.github/workflows/build.yml`](.github/workflows/build.yml) 在 push/PR 时自动构建 debug APK 并上传 artifact；
-  推送 `v*` 标签时会自动生成 GitHub Release（APK + sha256 + NOTICE.md）。
+  推送 `v*` 标签时使用 **release 签名**构建并发布 GitHub Release，**Release 正文自动取自 CHANGELOG 对应版本**
+  （本次更新内容 + 安装说明），附件为 APK + sha256 + NOTICE.md。
+- 签名密钥与 GitHub Secrets 配置见 [docs/RELEASE.md](docs/RELEASE.md)。
 - 本地构建：`gradle :app:assembleDebug`（或 `pwsh -File scripts/build.ps1`）。
 
 ## 隐私与安全
