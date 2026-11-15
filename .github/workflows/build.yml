@@ -37,28 +37,16 @@ jobs:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-      # Hosted ubuntu runners ship an Android SDK (cmdline-tools + platform-tools).
-      # We install the compile SDK / build-tools explicitly; Gradle may also
-      # auto-download any missing component once licenses are accepted below.
       - name: Prepare Android SDK
         run: |
           set -e
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-
           SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(command -v sdkmanager || true)"
-          fi
-          if [ -z "$SDKMANAGER" ]; then
-            echo "sdkmanager not found; letting Gradle auto-download SDK components"
-            exit 0
-          fi
-          echo "sdkmanager: $SDKMANAGER"
-
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(command -v sdkmanager || true)"; fi
+          if [ -z "$SDKMANAGER" ]; then exit 0; fi
           yes | "$SDKMANAGER" --licenses > /dev/null || true
-          # compileSdk 37 may live on the preview channel depending on the runner image
           "$SDKMANAGER" "platforms;android-${COMPILE_SDK}" \
             || "$SDKMANAGER" --channel=3 "platforms;android-${COMPILE_SDK}" \
             || echo "WARN: platforms;android-${COMPILE_SDK} unavailable; Gradle will try to download it"
@@ -79,9 +67,7 @@ jobs:
         run: |
           APK=app/build/outputs/apk/debug/app-debug.apk
           AAPT2="$(ls -d "${ANDROID_HOME}"/build-tools/*/aapt2 2>/dev/null | tail -1)"
-          if [ -z "$AAPT2" ]; then
-            AAPT2="$(ls -d /usr/local/lib/android/sdk/build-tools/*/aapt2 | tail -1)"
-          fi
+          if [ -z "$AAPT2" ]; then AAPT2="$(ls -d /usr/local/lib/android/sdk/build-tools/*/aapt2 | tail -1)"; fi
           "$AAPT2" dump badging "$APK" | head -1
           VERSION="$("$AAPT2" dump badging "$APK" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -1)"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -96,7 +82,7 @@ jobs:
           retention-days: 14
 
   release:
-    name: Publish GitHub Release
+    name: Build signed APK & publish Release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
@@ -108,26 +94,101 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download built APK
-        uses: actions/download-artifact@v4
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v5
         with:
-          name: CardPersonality-debug-apk
-          path: apk
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Prepare release asset
+      - name: Prepare Android SDK
         run: |
-          VERSION="${{ needs.build.outputs.version }}"
-          if [ -z "$VERSION" ]; then echo "version output missing" >&2; exit 1; fi
+          set -e
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(command -v sdkmanager || true)"; fi
+          if [ -z "$SDKMANAGER" ]; then exit 0; fi
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-${COMPILE_SDK}" \
+            || "$SDKMANAGER" --channel=3 "platforms;android-${COMPILE_SDK}" \
+            || echo "WARN: platforms;android-${COMPILE_SDK} unavailable; Gradle will try to download it"
+          "$SDKMANAGER" "build-tools;${BUILD_TOOLS}" || true
+          "$SDKMANAGER" "build-tools;35.0.0" || true
+          "$SDKMANAGER" "platform-tools" || true
+
+      - name: Set up Gradle ${{ env.GRADLE_VERSION }}
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      # Decode the release keystore from the repository secret (base64 PKCS12).
+      # If the secret is absent the Gradle release build falls back to debug signing,
+      # so forks/PRs still produce an installable APK.
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "RELEASE_STORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+            echo "release keystore decoded"
+          else
+            echo "::warning::RELEASE_KEYSTORE_BASE64 secret is not set — release build will be debug-signed"
+          fi
+
+      - name: Assemble release APK
+        env:
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Prepare release asset and notes
+        run: |
+          set -e
+          APK=app/build/outputs/apk/release/app-release.apk
+          AAPT2="$(ls -d "${ANDROID_HOME}"/build-tools/*/aapt2 2>/dev/null | tail -1)"
+          if [ -z "$AAPT2" ]; then AAPT2="$(ls -d /usr/local/lib/android/sdk/build-tools/*/aapt2 | tail -1)"; fi
+          "$AAPT2" dump badging "$APK" | head -1
+          VERSION="$("$AAPT2" dump badging "$APK" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -1)"
+          if [ -z "$VERSION" ]; then echo "versionName not found" >&2; exit 1; fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          cp apk/app-debug.apk "CardPersonality-v${VERSION}.apk"
+          cp "$APK" "CardPersonality-v${VERSION}.apk"
           sha256sum "CardPersonality-v${VERSION}.apk" > "CardPersonality-v${VERSION}.apk.sha256"
+
+          # Release body = this version's section from CHANGELOG.md (+ install/asset notes).
+          python3 - "$VERSION" <<'PY'
+          import io, re, sys
+          version = sys.argv[1]
+          changelog = io.open('CHANGELOG.md', encoding='utf-8').read()
+          m = re.search(r'^## \[%s\][^\n]*\n(.*?)(?=^## \[|\Z)' % re.escape(version),
+                        changelog, re.S | re.M)
+          section = m.group(1).strip() if m else '_（CHANGELOG 中未找到该版本条目）_'
+          body = (
+              f"## 本次更新 · v{version}\n\n"
+              f"{section}\n\n"
+              "---\n\n"
+              "## 安装 / 升级\n\n"
+              "- 需要 **root + LSPosed（Zygisk）**，作用域勾选 **荣耀钱包**（`com.hihonor.wallet`）。\n"
+              "- 安装后：LSPosed 启用模块 → **先打开一次「荣耀卡面工坊」面板**（初始化跨进程通道）→ 重启荣耀钱包。\n"
+              "- 本 Release 的 APK 为 **release 签名构建**；从旧版（debug 签名）升级前请先卸载旧版，之后同签名可直接覆盖升级。\n"
+              "- 版本号：`versionName` 见标题；`versionCode` 固定为 1。\n\n"
+              "## 资产\n\n"
+              f"- `CardPersonality-v{version}.apk`（release 签名）\n"
+              f"- `CardPersonality-v{version}.apk.sha256`（校验用）\n"
+              "- `NOTICE.md`（第三方组件与许可声明）\n"
+          )
+          io.open('RELEASE_NOTES.md', 'w', encoding='utf-8').write(body)
+          print('release notes written:', len(body), 'chars')
+          PY
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           name: v${{ env.VERSION }}
           tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           files: |
             CardPersonality-v${{ env.VERSION }}.apk
             CardPersonality-v${{ env.VERSION }}.apk.sha256
