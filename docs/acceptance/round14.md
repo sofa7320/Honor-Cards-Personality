@@ -45,5 +45,16 @@ frozen APK dex（classes3/4 等）实测标记：
 ## E) 清理
 config/exports cleared；wallet 重启回原卡面（round14_final_original.png）；`svc power stayon false`；LSPosed 10/10 enabled；冷启动 0 ANR/FATAL。
 
-## F) Pre-release 核对（待 Lead 发布后补充）
-- 待核对：`prerelease=true`、assets（CardPersonality-v0.2.10.apk / .sha256 / NOTICE.md）、正文含 0.2.10 changelog。
+## F) Pre-release 核对（v0.2.10 已发布，PASS）
+GitHub Release: https://github.com/sofa7320/Honor-Cards-Personality/releases/tag/v0.2.10 （API id 447241120，published_at 2026-11-16T15:42:08Z）
+
+| 核对项 | 结果 |
+|---|---|
+| prerelease / draft | **PASS** — `prerelease: true`、`draft: false`；设备端 Release 页显示「预发行」标签（round14_release_page.png） |
+| assets（3 个） | **PASS** — `CardPersonality-v0.2.10.apk` 27,343,721 B，digest `sha256:e5d7bd9100c5ae041ef507500199dacb1e57b4350d6177d8dc0ecf6609038b9b`；`CardPersonality-v0.2.10.apk.sha256`（94 B）；`NOTICE.md`（2,765 B） |
+| 正文含 0.2.10 changelog | **PASS** — body 开头「## 本次更新 · v0.2.10」+ PR/Pre-release 说明 + OPPO 卡面能力移植（CNIV 14 方法、Fin* 容器、file:// 方案、诊断 widgetHits/fileReplacements/recordedModels）+「关于页开源支持新增 oplus-card-customizer」+ 安装/资产说明 |
+| 发布链接可达 | **PASS** — 设备打开 release 页，`capturedLink=https://github.com/sofa7320/Honor-Cards-Personality/releases/tag/v0.2.10`（GitHub app，截图 round14_release_page.png） |
+| main 是否合并 | **未合并** — repo `main` HEAD 仍 `523ab54`（v0.2.7）；PR #3 仍开启，Lead 侧管理 |
+
+备注：Release 资产为 **release 签名构建**（27,343,721 B，R8 收缩后），与验收用 debug 构建（36,451,228 B，sha 59650F37…）字节不同属预期；版本/功能同源（R8 仅优化体积）。建议用户在发布资产上做一次冒烟安装即可（本验收设备保持 debug 构建以便后续回归）。
+
