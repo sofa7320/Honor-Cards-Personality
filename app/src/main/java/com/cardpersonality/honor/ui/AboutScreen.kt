@@ -57,6 +57,7 @@ private const val GITHUB_REPO_URL = "https://github.com/sofa7320/Honor-Cards-Per
 private const val GITHUB_ISSUES_URL = "https://github.com/sofa7320/Honor-Cards-Personality/issues/new"
 private const val MIUIX_URL = "https://github.com/compose-miuix-ui/miuix"
 private const val LSPOSED_URL = "https://github.com/LSPosed/LSPosed"
+private const val OPLUS_CARD_CUSTOMIZER_URL = "https://github.com/crrashh1542/oplus-card-customizer"
 
 /**
  * Miuix "About" page: app icon/name/version, the wallet versions this build supports, a link to the
@@ -251,6 +252,19 @@ fun AboutScreen(
                     OpenSourceRow(
                         label = "LSPosed",
                         description = "Xposed 框架与模块加载",
+                    )
+                }
+            }
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    onClick = { openUrl(OPLUS_CARD_CUSTOMIZER_URL) },
+                ) {
+                    OpenSourceRow(
+                        label = "oplus-card-customizer",
+                        description = "OPPO 钱包卡面自定义支持（实现参考）",
                     )
                 }
             }
@@ -485,6 +499,7 @@ private fun rememberLauncherIconBitmap(ctx: Context): ImageBitmap? {
         }.getOrNull()
     }
 }
+
 
 
 
