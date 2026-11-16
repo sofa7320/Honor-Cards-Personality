@@ -51,6 +51,7 @@ private const val CALL_OPLOG = "oplog"
     private const val EXTRA_SOURCE = "source"
     private const val EXTRA_ACTION = "action"
     private const val EXTRA_DETAIL = "detail"
+    private const val EXTRA_ENGINE = "engine"
     private const val EXTRA_OK = "ok"
 
     private const val TTL_MS = 5_000L
@@ -125,6 +126,13 @@ private const val CALL_OPLOG = "oplog"
      */
     @Volatile
     var walletPackage: String = Wallets.HONOR
+
+    /**
+     * Round-12 diagnostics: returns the wallet engine's state JSON (e.g. OPPO hook counts/observed
+     * URLs/cards) so it can ride along with every report and be shown in the About/diagnostic page.
+     */
+    @Volatile
+    var engineStateProvider: (() -> String)? = null
 
     fun prefetchAsync() {
         if (!prefetchScheduled.compareAndSet(false, true)) return
@@ -357,6 +365,12 @@ private const val CALL_OPLOG = "oplog"
             val extras = Bundle().apply {
                 putString(EXTRA_JSON, cardsJson)
                 putString(EXTRA_WALLET, walletPackage)
+                try {
+                    engineStateProvider?.invoke()?.takeIf { it.isNotBlank() }?.let {
+                        putString(EXTRA_ENGINE, it)
+                    }
+                } catch (_: Throwable) {
+                }
             }
             val result = ctx.contentResolver.call(Uri.parse(BASE_URI), CALL_REPORT, null, extras)
             val ok = result?.getBoolean(EXTRA_OK, false) == true

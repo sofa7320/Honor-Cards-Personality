@@ -53,6 +53,9 @@ class FaceProvider : ContentProvider() {
                 CALL_GET_CONFIG -> putFaceConfig(ctx, extras, out)
                 CALL_REPORT -> {
                     val json = extras?.getString(EXTRA_JSON)
+                    extras?.getString(EXTRA_ENGINE)?.takeIf { it.isNotBlank() }?.let { engineJson ->
+                        saveEngineState(ctx, engineJson)
+                    }
                     val ok = FaceRepository.reportCards(ctx, json)
                     // Round-10: remember which wallet package reported cards (active wallet).
                     extras?.getString(EXTRA_WALLET)?.takeIf { it.isNotBlank() }?.let { pkg ->
@@ -72,6 +75,11 @@ class FaceProvider : ContentProvider() {
                 }
                 CALL_GET_REPORT -> {
                     out.putString(EXTRA_JSON, FaceRepository.reportJson(ctx))
+                    out.putString(EXTRA_ENGINE, readEngineState(ctx))
+                    out.putBoolean(EXTRA_OK, true)
+                }
+                CALL_ENGINE_STATE -> {
+                    out.putString(EXTRA_ENGINE, readEngineState(ctx))
                     out.putBoolean(EXTRA_OK, true)
                 }
                 CALL_SAVE_ORIGINAL -> putSaveOriginalFace(ctx, extras, out)
@@ -106,6 +114,25 @@ class FaceProvider : ContentProvider() {
      * name and kind, plus the active wallet package (last package that reported cards).
      * Returning this does not launch or touch the other wallet app.
      */
+    /** Round-12: last wallet-engine diagnostics JSON (OPPO hook counts/observed URLs/cards). */
+    private fun engineStateFile(ctx: Context): File = File(ctx.filesDir, ENGINE_STATE_FILE)
+
+    private fun saveEngineState(ctx: Context, json: String) {
+        try {
+            engineStateFile(ctx).writeText(json, Charsets.UTF_8)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun readEngineState(ctx: Context): String {
+        return try {
+            val f = engineStateFile(ctx)
+            if (f.isFile) f.readText(Charsets.UTF_8) else "{}"
+        } catch (_: Throwable) {
+            "{}"
+        }
+    }
+
     private fun putWallets(ctx: Context, out: Bundle) {
         val pm = ctx.packageManager
         val arr = JSONArray()
@@ -358,6 +385,7 @@ class FaceProvider : ContentProvider() {
         const val CALL_WALLETS = "wallets"
         const val CALL_SCAN_WALLETS = "scan_wallets"
         const val CALL_OPLOG = "oplog"
+        const val CALL_ENGINE_STATE = "engine_state"
 
         const val EXTRA_JSON = "json"
         const val EXTRA_TYPE = "type"
@@ -374,6 +402,7 @@ class FaceProvider : ContentProvider() {
         const val EXTRA_SOURCE = "source"
         const val EXTRA_ACTION = "action"
         const val EXTRA_DETAIL = "detail"
+        const val EXTRA_ENGINE = "engine"
 
         /** Only these card types may store original-face snapshots. */
         private val ORIGINAL_TYPES = setOf("transit", "bank", "access", "campus", "carkey", "ebike")
@@ -383,6 +412,9 @@ class FaceProvider : ContentProvider() {
 
         /** File remembering which wallet package last reported cards (active wallet). */
         private const val ACTIVE_WALLET_FILE = "active_wallet.txt"
+
+        /** Last wallet-engine diagnostics JSON (OPPO hook state, shown in About/diagnostics). */
+        private const val ENGINE_STATE_FILE = "oppo_engine.json"
 
         /** Hard cap for one stored snapshot (hook sends long-side<=640 JPEG q85). */
         private const val ORIGINAL_MAX_BYTES = 3 * 1024 * 1024

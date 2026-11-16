@@ -31,6 +31,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -64,21 +66,9 @@ fun AboutScreen(
     ctx: Context,
     onBack: () -> Unit,
 ) {
-    val walletSnapshot = remember { WalletProbe.query(ctx) }
-    val installedWallets = remember(walletSnapshot) {
-        walletSnapshot?.wallets ?: WalletPackages.installed(ctx).map {
-            WalletStatus(it.packageName, it.displayName, "", true, it.versionName)
-        }
-    }
-    val honorInstalled = installedWallets.firstOrNull {
-        it.packageName == WalletPackages.HONOR && it.installed
-    }
-    val oppoInstalled = installedWallets.firstOrNull {
-        it.packageName == WalletPackages.OPPO && it.installed
-    }
-    val unknownWallets = remember { WalletProbe.scanUnknownWallets(ctx) }
     var exporting by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val launcherIcon = rememberLauncherIconBitmap(ctx)
     fun exportDiagnostics() {
         if (exporting) return
         exporting = true
@@ -146,13 +136,23 @@ fun AboutScreen(
                         .padding(horizontal = 24.dp, vertical = 18.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Image(
-                        painter = painterResource(R.drawable.ic_launcher_foreground),
-                        contentDescription = null,
-                        modifier = Modifier
-                            .size(72.dp)
-                            .clip(RoundedCornerShape(18.dp)),
-                    )
+                    if (launcherIcon != null) {
+                        Image(
+                            bitmap = launcherIcon,
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(72.dp)
+                                .clip(RoundedCornerShape(18.dp)),
+                        )
+                    } else {
+                        Image(
+                            painter = painterResource(R.drawable.ic_launcher_foreground),
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(72.dp)
+                                .clip(RoundedCornerShape(18.dp)),
+                        )
+                    }
                     Spacer(Modifier.height(14.dp))
                     Text(
                         text = stringResource(R.string.app_name),
@@ -181,96 +181,25 @@ fun AboutScreen(
                         .padding(horizontal = 16.dp, vertical = 4.dp),
                 ) {
                     Column {
-                        val displayWallets = (walletSnapshot?.wallets ?: listOfNotNull(
-                            WalletStatus(
-                                WalletPackages.HONOR,
-                                "荣耀钱包",
-                                "honor",
-                                honorInstalled != null,
-                                honorInstalled?.versionName,
-                            ),
-                            WalletStatus(
-                                WalletPackages.OPPO,
-                                "欧加钱包",
-                                "oppo",
-                                oppoInstalled != null,
-                                oppoInstalled?.versionName,
-                            ),
-                        )).sortedByDescending { it.installed }
-                        if (displayWallets.isEmpty()) {
-                            AboutInfoRow(
-                                label = "钱包检测",
-                                value = "未检测到",
-                                summary = "请确认系统钱包包名是否为已支持列表",
-                            )
-                        }
-                        displayWallets.forEachIndexed { index, wallet ->
-                            if (index > 0) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 18.dp)
-                                        .height(0.5.dp)
-                                        .background(
-                                            MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.2f),
-                                        ),
-                                )
-                            }
-                            val supported = when (wallet.packageName) {
-                                WalletPackages.HONOR -> WalletPackages.HONOR_SUPPORTED_VERSION
-                                WalletPackages.OPPO -> WalletPackages.OPPO_SUPPORTED_VERSION
-                                else -> ""
-                            }
-                            val versionText = wallet.versionName?.takeIf { it.isNotBlank() }
-                                ?: supported.ifEmpty { "—" }
-                            val summary = buildString {
-                                append(wallet.packageName)
-                                append(" · ")
-                                append(if (wallet.installed) "已安装" else "未安装")
-                                if (supported.isNotEmpty() && wallet.installed &&
-                                    wallet.versionName != null && wallet.versionName != supported
-                                ) {
-                                    append(" · 支持版本 ")
-                                    append(supported)
-                                }
-                            }
-                            AboutInfoRow(
-                                label = wallet.label.ifBlank { WalletPackages.displayName(wallet.packageName) },
-                                value = versionText,
-                                summary = summary,
-                            )
-                        }
-                    }
-                }
-            }
-            if (unknownWallets.isNotEmpty()) {
-                item { SmallTitle("检测到未适配钱包") }
-                item {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 4.dp),
-                    ) {
-                        Column {
-                            unknownWallets.forEachIndexed { index, wallet ->
-                                if (index > 0) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 18.dp)
-                                            .height(0.5.dp)
-                                            .background(
-                                                MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.2f),
-                                            ),
-                                    )
-                                }
-                                AboutInfoRow(
-                                    label = wallet.label,
-                                    value = wallet.versionName ?: "未适配",
-                                    summary = wallet.packageName + " · 信息仅用于诊断，不会自动修改",
-                                )
-                            }
-                        }
+                        AboutInfoRow(
+                            label = "荣耀钱包",
+                            value = WalletPackages.HONOR_SUPPORTED_VERSION,
+                            summary = WalletPackages.HONOR,
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 18.dp)
+                                .height(0.5.dp)
+                                .background(
+                                    MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.2f),
+                                ),
+                        )
+                        AboutInfoRow(
+                            label = "欧加钱包",
+                            value = WalletPackages.OPPO_SUPPORTED_VERSION,
+                            summary = WalletPackages.OPPO,
+                        )
                     }
                 }
             }
@@ -282,10 +211,7 @@ fun AboutScreen(
                         .padding(horizontal = 16.dp, vertical = 4.dp),
                     onClick = { openUrl(GITHUB_REPO_URL) },
                 ) {
-                    AboutLinkRow(
-                        label = "GitHub 仓库",
-                        value = "sofa7320/Honor-Cards-Personality",
-                    )
+                    AboutLinkRow(label = "GitHub 仓库")
                 }
             }
             item {
@@ -295,10 +221,7 @@ fun AboutScreen(
                         .padding(horizontal = 16.dp, vertical = 4.dp),
                     onClick = { openUrl(GITHUB_ISSUES_URL) },
                 ) {
-                    AboutLinkRow(
-                        label = "发送错误报告",
-                        value = "GitHub Issues",
-                    )
+                    AboutLinkRow(label = "发送错误报告")
                 }
             }
 
@@ -402,7 +325,8 @@ private fun AboutInfoRow(
 @Composable
 private fun AboutLinkRow(
     label: String,
-    value: String,
+    /** Optional right-hand value; when null only the title + chevron are shown. */
+    value: String? = null,
 ) {
     Row(
         modifier = Modifier
@@ -414,15 +338,17 @@ private fun AboutLinkRow(
         Text(label, style = MiuixTheme.textStyles.body1)
         Spacer(Modifier.width(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = value,
-                style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.onBackgroundVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
-            Spacer(Modifier.width(6.dp))
+            if (!value.isNullOrBlank()) {
+                Text(
+                    text = value,
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onBackgroundVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                Spacer(Modifier.width(6.dp))
+            }
             Icon(
                 MiuixIcons.ChevronForward,
                 contentDescription = null,
@@ -432,6 +358,32 @@ private fun AboutLinkRow(
         }
     }
 }
+
+/**
+ * Reads the real launcher icon (the same AdaptiveIconDrawable the desktop uses); avoids drawing a
+ * look-alike vector and works with adaptive icons that Compose painterResource cannot decode.
+ */
+@Composable
+private fun rememberLauncherIconBitmap(ctx: Context): ImageBitmap? {
+    return remember(ctx) {
+        runCatching {
+            val drawable = ctx.packageManager.getApplicationIcon(ctx.packageName)
+            val size = 144
+            val bitmap = android.graphics.Bitmap.createBitmap(
+                size,
+                size,
+                android.graphics.Bitmap.Config.ARGB_8888,
+            )
+            val canvas = android.graphics.Canvas(bitmap)
+            drawable.setBounds(0, 0, size, size)
+            drawable.draw(canvas)
+            bitmap.asImageBitmap()
+        }.getOrNull()
+    }
+}
+
+
+
 
 
 

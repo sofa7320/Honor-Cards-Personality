@@ -122,6 +122,10 @@ object DiagnosticExporter {
             appendLine(walletsJson)
             appendLine("provider getReport（截断）：")
             appendLine(providerCall(ctx, "getReport").take(4000))
+            appendLine("OPPO 引擎状态（provider engine_state）：")
+            appendLine(providerCallExtra(ctx, "engine_state", "engine").take(4000))
+            appendLine("OPPO 引擎状态（getReport extra engine，截断）：")
+            appendLine(providerCallExtra(ctx, "getReport", "engine").take(2000))
         }
 
         section(sb, "4. 钱包与开关状态") {
@@ -223,6 +227,22 @@ object DiagnosticExporter {
             ) ?: return "（无返回）"
             val json = bundle.getString("json")
             if (!json.isNullOrBlank()) json.take(4000) else bundle.keySet().joinToString(", ")
+        } catch (t: Throwable) {
+            "调用失败：" + (t.message?.take(120) ?: t.javaClass.simpleName)
+        }
+    }
+
+    /** Reads one Bundle extra from a provider call (e.g. engine_state -> "engine"). */
+    private fun providerCallExtra(ctx: Context, method: String, key: String): String {
+        return try {
+            val bundle = ctx.contentResolver.call(
+                Uri.parse("content://" + com.cardpersonality.honor.data.FaceRepository.AUTHORITY),
+                method,
+                null,
+                null,
+            ) ?: return "（无返回）"
+            val value = bundle.getString(key)
+            if (!value.isNullOrBlank()) value.take(4000) else "（无 $key 字段）"
         } catch (t: Throwable) {
             "调用失败：" + (t.message?.take(120) ?: t.javaClass.simpleName)
         }
@@ -335,5 +355,6 @@ object DiagnosticExporter {
         }
     }
 }
+
 
 

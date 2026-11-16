@@ -6,6 +6,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -53,6 +54,9 @@ fun CardPersonalityApp() {
             )
         }
 
+        // Round 12: system back from About returns to the app's Home screen, not the launcher.
+        BackHandler(enabled = showAbout) { showAbout = false }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -81,4 +85,5 @@ fun CardPersonalityApp() {
         }
     }
 }
+
 
