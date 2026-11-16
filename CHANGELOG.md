@@ -7,6 +7,27 @@
 
 （暂无）
 
+## [0.2.9] - 2026-11-16
+
+> 本轮通过 **Pull Request**（stacked）提交，不直接合并 `main`，不发布 GitHub Release。
+> OPPO 系改动为静态实现，**无需实机验证**（维护者无 OPPO 设备）。
+
+### 新增
+- **关于页「开源支持」**：Miuix（https://github.com/compose-miuix-ui/miuix）与 LSPosed（https://github.com/LSPosed/LSPosed）两行，白字标题 + 灰字说明，可点击跳转。
+- OPPO 引擎诊断新增 `pairCount` / `captureCount` / `faceSource`（url/file/bitmap/none），OpLog 增加配对/抓图/本地读文件/预热记录。
+
+### 修复（OPPO/欧加钱包 5.52.0 读取链路）
+- 补上 OPPO 侧「抓原图」：无自定义卡面时 `FaceCapture.schedule(view, identity)`，面板可获取钱包原生卡面（此前 OPPO 引擎从不抓图，面板只能下载 URL，导致「读不到卡面」）。
+- 新增 L0 配对 hook：`QuickCardNfcCardView#h/setNfcCardData`、`cardframe.e#bindData`（`mCardImage`）、`DragonflyConsumeCardsFrameController#T/N`、`b0.a#d`、`FinUINfcCardFaceView#showCardImg`（`mThemeImg`）→ `viewToIdentity` 映射并立即 `recordCard` 上报，无需 URL 反查。
+- 进程内读取本地卡面：`file://` / 绝对路径归一化后由钱包进程（uid）直接 `File.readBytes()` 回传，解决面板无权限读取钱包私有目录的问题。
+- 卡类型映射修正：按 `NfcCard.getCardType()`（5/6/10/9/15/1/2/8/12/14/21/7/99/33）映射到 6 类，未知类型不上报（此前默认 transit）。
+- 替换卡面改为「URL → 钱包 cacheDir 本地 JPEG 路径」交给钱包 Glide 重新加载，保留原生圆角/缩放/缓存（此前直接 `setImageBitmap` 导致非首页卡片直角）。
+- 修正 `CircleNetworkImageView` hook 参数个数（g1=4/h1=2/j1=2，补 setSvgUrl/r1）、配置后台预热、URL 归一化 + 双表身份映射。
+
+### 界面
+- 关于页「链接」小标题更名为「反馈」。
+- 关于页软件图标放大，同步提高合成位图分辨率（与桌面图标一致）。
+
 ## [0.2.8] - 2026-11-16
 
 > 本轮通过 **Pull Request** 提交，不直接合并 `main`，不发布 GitHub Release。
@@ -130,7 +151,8 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
-[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.8...HEAD
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.9...HEAD
+[0.2.9]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.5...v0.2.6

@@ -123,7 +123,9 @@ object DiagnosticExporter {
             appendLine("provider getReport（截断）：")
             appendLine(providerCall(ctx, "getReport").take(4000))
             appendLine("OPPO 引擎状态（provider engine_state）：")
-            appendLine(providerCallExtra(ctx, "engine_state", "engine").take(4000))
+            val engineJson = providerCallExtra(ctx, "engine_state", "engine")
+            appendLine("OPPO 引擎摘要：" + summarizeEngine(engineJson))
+            appendLine(engineJson.take(4000))
             appendLine("OPPO 引擎状态（getReport extra engine，截断）：")
             appendLine(providerCallExtra(ctx, "getReport", "engine").take(2000))
         }
@@ -229,6 +231,27 @@ object DiagnosticExporter {
             if (!json.isNullOrBlank()) json.take(4000) else bundle.keySet().joinToString(", ")
         } catch (t: Throwable) {
             "调用失败：" + (t.message?.take(120) ?: t.javaClass.simpleName)
+        }
+    }
+
+    /** Human summary of the OPPO engine JSON used for troubleshooting the read pipeline. */
+    private fun summarizeEngine(json: String): String {
+        return try {
+            val obj = org.json.JSONObject(json)
+            val pair = obj.optInt("pairCount", -1)
+            val capture = obj.optInt("captureCount", -1)
+            val source = obj.optJSONObject("faceSource")
+            val sourceText = if (source == null) {
+                "无"
+            } else {
+                "url:" + source.optInt("url", 0) +
+                    " file:" + source.optInt("file", 0) +
+                    " bitmap:" + source.optInt("bitmap", 0) +
+                    " none:" + source.optInt("none", 0)
+            }
+            "配对 ${if (pair < 0) "?" else pair} / 抓图 ${if (capture < 0) "?" else capture} / 来源 $sourceText"
+        } catch (_: Throwable) {
+            "（无法解析 engine JSON）"
         }
     }
 
@@ -355,6 +378,7 @@ object DiagnosticExporter {
         }
     }
 }
+
 
 
 
