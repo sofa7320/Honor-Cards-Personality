@@ -143,18 +143,19 @@ object OppoFaceHookEngine {
         Triple("com.finshell.finui.widget.atomic.card.FinUINfcCardFaceView", "showCardImg", 2),
     )
 
-    fun install(classLoader: ClassLoader, processName: String?) {
+    fun install(classLoader: ClassLoader, processName: String?, walletPackage: String = WALLET_PACKAGE) {
         if (installed) return
         installed = true
+        val pkg = walletPackage
         try {
-            ProviderClient.walletPackage = WALLET_PACKAGE
+            ProviderClient.walletPackage = pkg
         } catch (_: Throwable) {
         }
         try {
-            val pkg = WALLET_PACKAGE
             val mainProcess = processName.isNullOrEmpty() || processName == pkg
             if (!mainProcess) {
                 HLog.i("OPPO engine: skip process '$processName' (card UI runs in the main process)")
+                ProviderClient.logOp("hook", "oppo-skip", "pkg=$pkg proc=$processName")
                 return
             }
             HLog.i("OPPO engine v2: installing fail-open hooks (wallet=$pkg, static-only validation)")
@@ -165,6 +166,7 @@ object OppoFaceHookEngine {
             ensureRefreshReceiver()
             armed = handles.isNotEmpty()
             HLog.i("OPPO engine v2: armed=$armed hooks=${handles.size}")
+            ProviderClient.logOp("hook", "oppo-armed", "pkg=$pkg hooks=${handles.size} armed=$armed")
         } catch (t: Throwable) {
             HLog.e("OPPO engine install failed (fail-open)", t)
         }

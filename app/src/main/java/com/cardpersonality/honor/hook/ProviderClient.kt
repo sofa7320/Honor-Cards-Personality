@@ -40,6 +40,7 @@ object ProviderClient {
     private const val CALL_REPORT = "report"
     private const val CALL_SAVE_ORIGINAL = "saveOriginalFace"
     private const val CALL_ORIGINAL_EXISTS = "originalExists"
+private const val CALL_OPLOG = "oplog"
     private const val EXTRA_JSON = "json"
     private const val EXTRA_VERSION = "version"
     private const val EXTRA_TYPE = "type"
@@ -47,6 +48,9 @@ object ProviderClient {
     private const val EXTRA_DATA = "data"
     private const val EXTRA_EXISTS = "exists"
     private const val EXTRA_WALLET = "wallet"
+    private const val EXTRA_SOURCE = "source"
+    private const val EXTRA_ACTION = "action"
+    private const val EXTRA_DETAIL = "detail"
     private const val EXTRA_OK = "ok"
 
     private const val TTL_MS = 5_000L
@@ -364,6 +368,29 @@ object ProviderClient {
         }
     }
 
+    /**
+     * Round-11: appends one diagnostics entry to the panel journal (files/oplog.txt) through the
+     * provider `"oplog"` call. Fire-and-forget; never throws; no-op while provider is unavailable.
+     */
+    fun logOp(source: String, action: String, detail: String = "") {
+        try {
+            executor.execute {
+                try {
+                    if (System.currentTimeMillis() < unavailableUntil) return@execute
+                    val ctx = appContext() ?: return@execute
+                    val extras = Bundle().apply {
+                        putString(EXTRA_SOURCE, source)
+                        putString(EXTRA_ACTION, action)
+                        putString(EXTRA_DETAIL, detail)
+                    }
+                    ctx.contentResolver.call(Uri.parse(BASE_URI), CALL_OPLOG, null, extras)
+                } catch (_: Throwable) {
+                }
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
     /** Fire-and-forget report from hot hook paths (main thread safe). */
     fun reportAsync(cardsJson: String) {
         try {
@@ -453,6 +480,7 @@ object ProviderClient {
      * Never throws.
      */
     private fun onFailure(reason: String) {
+        logOp("hook", "fail-open", reason)
         val now = System.currentTimeMillis()
         lastFailure = reason
         snapshotAt = now

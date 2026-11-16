@@ -189,6 +189,9 @@ jobs:
           name: v${{ env.VERSION }}
           tag_name: ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md
+          # 早期开发阶段：版本先以 Pre-release 发布（稳定后再关闭）。
+          prerelease: true
+          make_latest: false
           files: |
             CardPersonality-v${{ env.VERSION }}.apk
             CardPersonality-v${{ env.VERSION }}.apk.sha256

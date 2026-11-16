@@ -21,6 +21,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import com.cardpersonality.honor.BuildConfig
 import com.cardpersonality.honor.R
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -43,6 +48,8 @@ import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.cardpersonality.honor.ui.util.DiagnosticExporter
+import kotlinx.coroutines.launch
 
 private const val GITHUB_REPO_URL = "https://github.com/sofa7320/Honor-Cards-Personality"
 private const val GITHUB_ISSUES_URL = "https://github.com/sofa7320/Honor-Cards-Personality/issues/new"
@@ -68,6 +75,31 @@ fun AboutScreen(
     }
     val oppoInstalled = installedWallets.firstOrNull {
         it.packageName == WalletPackages.OPPO && it.installed
+    }
+    val unknownWallets = remember { WalletProbe.scanUnknownWallets(ctx) }
+    var exporting by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    fun exportDiagnostics() {
+        if (exporting) return
+        exporting = true
+        scope.launch {
+            val result = DiagnosticExporter.export(ctx)
+            exporting = false
+            if (result.ok) {
+                val suffix = result.error?.let { "（$it）" } ?: ""
+                Toast.makeText(
+                    ctx,
+                    "已导出诊断报告：${result.path}$suffix",
+                    Toast.LENGTH_LONG,
+                ).show()
+            } else {
+                Toast.makeText(
+                    ctx,
+                    "导出失败：" + (result.error ?: "未知错误"),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
     }
 
     fun openUrl(url: String) {
@@ -149,37 +181,99 @@ fun AboutScreen(
                         .padding(horizontal = 16.dp, vertical = 4.dp),
                 ) {
                     Column {
-                        AboutInfoRow(
-                            label = "荣耀钱包",
-                            value = WalletPackages.HONOR_SUPPORTED_VERSION,
-                            summary = WalletPackages.HONOR +
-                                if (honorInstalled != null) {
-                                    " · 已安装" + (honorInstalled.versionName?.let { "（本机 $it）" } ?: "")
-                                } else {
-                                    " · 未安装"
-                                },
-                        )
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 18.dp)
-                                .height(0.5.dp)
-                                .background(MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.2f)),
-                        )
-                        AboutInfoRow(
-                            label = "欧加钱包",
-                            value = WalletPackages.OPPO_SUPPORTED_VERSION,
-                            summary = WalletPackages.OPPO +
-                                if (oppoInstalled != null) {
-                                    " · 已安装" + (oppoInstalled.versionName?.let { "（本机 $it）" } ?: "")
-                                } else {
-                                    " · 未安装"
-                                },
-                        )
+                        val displayWallets = (walletSnapshot?.wallets ?: listOfNotNull(
+                            WalletStatus(
+                                WalletPackages.HONOR,
+                                "荣耀钱包",
+                                "honor",
+                                honorInstalled != null,
+                                honorInstalled?.versionName,
+                            ),
+                            WalletStatus(
+                                WalletPackages.OPPO,
+                                "欧加钱包",
+                                "oppo",
+                                oppoInstalled != null,
+                                oppoInstalled?.versionName,
+                            ),
+                        )).sortedByDescending { it.installed }
+                        if (displayWallets.isEmpty()) {
+                            AboutInfoRow(
+                                label = "钱包检测",
+                                value = "未检测到",
+                                summary = "请确认系统钱包包名是否为已支持列表",
+                            )
+                        }
+                        displayWallets.forEachIndexed { index, wallet ->
+                            if (index > 0) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 18.dp)
+                                        .height(0.5.dp)
+                                        .background(
+                                            MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.2f),
+                                        ),
+                                )
+                            }
+                            val supported = when (wallet.packageName) {
+                                WalletPackages.HONOR -> WalletPackages.HONOR_SUPPORTED_VERSION
+                                WalletPackages.OPPO -> WalletPackages.OPPO_SUPPORTED_VERSION
+                                else -> ""
+                            }
+                            val versionText = wallet.versionName?.takeIf { it.isNotBlank() }
+                                ?: supported.ifEmpty { "—" }
+                            val summary = buildString {
+                                append(wallet.packageName)
+                                append(" · ")
+                                append(if (wallet.installed) "已安装" else "未安装")
+                                if (supported.isNotEmpty() && wallet.installed &&
+                                    wallet.versionName != null && wallet.versionName != supported
+                                ) {
+                                    append(" · 支持版本 ")
+                                    append(supported)
+                                }
+                            }
+                            AboutInfoRow(
+                                label = wallet.label.ifBlank { WalletPackages.displayName(wallet.packageName) },
+                                value = versionText,
+                                summary = summary,
+                            )
+                        }
                     }
                 }
             }
-
+            if (unknownWallets.isNotEmpty()) {
+                item { SmallTitle("检测到未适配钱包") }
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                    ) {
+                        Column {
+                            unknownWallets.forEachIndexed { index, wallet ->
+                                if (index > 0) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 18.dp)
+                                            .height(0.5.dp)
+                                            .background(
+                                                MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.2f),
+                                            ),
+                                    )
+                                }
+                                AboutInfoRow(
+                                    label = wallet.label,
+                                    value = wallet.versionName ?: "未适配",
+                                    summary = wallet.packageName + " · 信息仅用于诊断，不会自动修改",
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             item { SmallTitle("链接") }
             item {
                 Card(
@@ -208,6 +302,47 @@ fun AboutScreen(
                 }
             }
 
+            item { SmallTitle("诊断") }
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    onClick = { exportDiagnostics() },
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("导出诊断报告", style = MiuixTheme.textStyles.body1)
+                            Text(
+                                text = if (exporting) {
+                                    "正在收集设备 / Root / LSPosed / 操作记录…"
+                                } else {
+                                    "设备、Root、LSPosed、钱包与操作记录 → Download/honor_cards_personality/logs"
+                                },
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onBackgroundVariant,
+                            )
+                        }
+                        if (exporting) {
+                            Spacer(Modifier.width(12.dp))
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                        } else {
+                            Spacer(Modifier.width(12.dp))
+                            Icon(
+                                MiuixIcons.ChevronForward,
+                                contentDescription = null,
+                                tint = MiuixTheme.colorScheme.onBackgroundVariant,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                }
+            }
             item { SmallTitle("致谢") }
             item {
                 Card(
@@ -297,6 +432,10 @@ private fun AboutLinkRow(
         }
     }
 }
+
+
+
+
 
 
 

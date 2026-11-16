@@ -265,6 +265,12 @@ object FaceRepository {
         }
         writeStore(ctx, ConfigStore(globalVersion, now, cards, types))
         renderExport(ctx, key, wallet)
+        OpLog.record(
+            ctx,
+            "config",
+            if (hasFace) "save" else "save-elements",
+            "$fileKey wallet=$wallet v=$cardVersion",
+        )
         notifyWalletConfigChanged(ctx)
         // Hand the caller absolute paths back for UI state.
         return saved
@@ -290,6 +296,7 @@ object FaceRepository {
         exportFile(ctx, fileKey)?.delete()
         if (WalletScope.isHonor(wallet)) exportFile(ctx, key.fileKey)?.delete()
         notifyWalletConfigChanged(ctx)
+        OpLog.record(ctx, "config", "clear", "$fileKey wallet=$wallet")
     }
 
     /**
@@ -298,6 +305,7 @@ object FaceRepository {
      * Best effort: never let a broadcast failure break saving.
      */
     fun notifyWalletConfigChanged(ctx: Context) {
+        OpLog.record(ctx, "wallet", "refresh", "CONFIG_CHANGED broadcast")
         try {
             val intent = android.content.Intent(ACTION_CONFIG_CHANGED)
                 .setPackage(WALLET_PACKAGE)
@@ -360,7 +368,14 @@ object FaceRepository {
         }
         if (cfg == null || !cfg.hasCustomFace) return false
         val out = exportFile(ctx, fileKey)
-        return FaceRenderer.renderToFile(ctx, cfg, out, walletPackage = wallet)
+        val ok = FaceRenderer.renderToFile(ctx, cfg, out, walletPackage = wallet)
+        OpLog.record(
+            ctx,
+            "render",
+            if (ok) "export-ok" else "export-fail",
+            "$fileKey wallet=$wallet ${out.length()}B",
+        )
+        return ok
     }
 
     // ------------------------------------------------------------------ provider helpers
@@ -412,6 +427,7 @@ object FaceRepository {
             put("cards", arr)
         }
         writeTextAtomically(reportFile(ctx), obj.toString())
+        OpLog.record(ctx, "wallet", "report", "cards=${merged.size}")
         return true
     }
 
@@ -779,6 +795,7 @@ object FaceRepository {
      * by loading it with Typeface.createFromFile. Returns the absolute path on success.
      */
     fun importFontOutcome(ctx: Context, uri: Uri): ImportResult {
+        OpLog.record(ctx, "font", "import", uri.toString())
         var temp: File? = null
         return try {
             val resolver = ctx.contentResolver
@@ -863,6 +880,7 @@ object FaceRepository {
         cfg: CardFaceConfig,
         title: String,
     ): ImportResult {
+        OpLog.record(ctx, "zip", "export", "key=${key.fileKey} title=$title")
         return try {
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
             val safeTitle = title.ifBlank { key.fileKey }
@@ -983,6 +1001,7 @@ object FaceRepository {
      * config paths and returns the config with absolute runtime paths (the caller saves it).
      */
     fun importCardZip(ctx: Context, uri: Uri): CardZipImport {
+        OpLog.record(ctx, "zip", "import", uri.toString())
         val resolver = ctx.contentResolver
         val tempRoot = File(ctx.cacheDir, "zip_import_" + UUID.randomUUID().toString().take(8))
         return try {

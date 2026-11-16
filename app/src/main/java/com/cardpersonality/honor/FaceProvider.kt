@@ -11,6 +11,7 @@ import android.util.Log
 import com.cardpersonality.honor.data.CardKey
 import com.cardpersonality.honor.data.FaceRepository
 import com.cardpersonality.honor.data.Hashing
+import com.cardpersonality.honor.data.OpLog
 import com.cardpersonality.honor.hook.Wallets
 import org.json.JSONArray
 import org.json.JSONObject
@@ -61,6 +62,14 @@ class FaceProvider : ContentProvider() {
                     out.putInt(EXTRA_VERSION, FaceRepository.storeVersion(ctx))
                 }
                 CALL_WALLETS -> putWallets(ctx, out)
+                CALL_SCAN_WALLETS -> putScanWallets(ctx, out)
+                CALL_OPLOG -> {
+                    val source = extras?.getString(EXTRA_SOURCE).orEmpty()
+                    val action = extras?.getString(EXTRA_ACTION).orEmpty()
+                    val detail = extras?.getString(EXTRA_DETAIL).orEmpty()
+                    com.cardpersonality.honor.data.OpLog.record(ctx, source, action, detail)
+                    out.putBoolean(EXTRA_OK, true)
+                }
                 CALL_GET_REPORT -> {
                     out.putString(EXTRA_JSON, FaceRepository.reportJson(ctx))
                     out.putBoolean(EXTRA_OK, true)
@@ -114,6 +123,52 @@ class FaceProvider : ContentProvider() {
                     .put("installed", info != null)
                     .put("versionName", info?.versionName ?: ""),
             )
+        }
+        val json = JSONObject()
+            .put("wallets", arr)
+            .put("activeWalletPackage", readActiveWallet(ctx))
+        out.putString(EXTRA_JSON, json.toString())
+        out.putBoolean(EXTRA_OK, true)
+        val installedCount = (0 until arr.length()).count { arr.getJSONObject(it).optBoolean("installed") }
+        OpLog.record(ctx, "wallet", "detect", "installed=$installedCount/${Wallets.ALL.size}")
+    }
+
+    /**
+     * Round-11 optional: scan installed apps whose label mentions 钱包/Wallet but are NOT in the
+     * supported registry — the panel can show "检测到未适配钱包". Read-only; nothing is hooked.
+     */
+    private fun putScanWallets(ctx: Context, out: Bundle) {
+        val pm = ctx.packageManager
+        val known = Wallets.ALL.map { it.pkg }.toSet()
+        val arr = JSONArray()
+        try {
+            val apps = pm.getInstalledApplications(0)
+            for (app in apps) {
+                val pkg = app.packageName ?: continue
+                if (pkg == ctx.packageName) continue
+                val label = try {
+                    pm.getApplicationLabel(app)?.toString().orEmpty()
+                } catch (_: Throwable) {
+                    ""
+                }
+                val looksWallet = label.contains("钱包") ||
+                    label.contains("wallet", ignoreCase = true) ||
+                    label.contains("欧加", ignoreCase = true) ||
+                    label.contains("荣耀", ignoreCase = true)
+                if (!looksWallet) continue
+                arr.put(
+                    JSONObject()
+                        .put("package", pkg)
+                        .put("label", label)
+                        .put("known", pkg in known)
+                        .put("versionName", try {
+                            pm.getPackageInfo(pkg, 0).versionName ?: ""
+                        } catch (_: Throwable) {
+                            ""
+                        }),
+                )
+            }
+        } catch (_: Throwable) {
         }
         val json = JSONObject()
             .put("wallets", arr)
@@ -301,6 +356,8 @@ class FaceProvider : ContentProvider() {
         const val CALL_ORIGINAL_EXISTS = "originalExists"
         const val CALL_PING = "ping"
         const val CALL_WALLETS = "wallets"
+        const val CALL_SCAN_WALLETS = "scan_wallets"
+        const val CALL_OPLOG = "oplog"
 
         const val EXTRA_JSON = "json"
         const val EXTRA_TYPE = "type"
@@ -314,6 +371,9 @@ class FaceProvider : ContentProvider() {
         const val EXTRA_ERROR = "error"
         const val EXTRA_PONG = "pong"
         const val EXTRA_WALLET = "wallet"
+        const val EXTRA_SOURCE = "source"
+        const val EXTRA_ACTION = "action"
+        const val EXTRA_DETAIL = "detail"
 
         /** Only these card types may store original-face snapshots. */
         private val ORIGINAL_TYPES = setOf("transit", "bank", "access", "campus", "carkey", "ebike")

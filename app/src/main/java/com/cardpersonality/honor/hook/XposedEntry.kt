@@ -22,9 +22,14 @@ class XposedEntry : IXposedHookLoadPackage {
             val target = Wallets.target(pkg)
             if (target != null) {
                 HLog.i("$ALIVE_MSG wallet=${target.kind} pkg=$pkg proc=$proc first=${lpparam.isFirstApplication}")
-                when (target.pkg) {
-                    Wallets.HONOR -> FaceHookEngine.install(lpparam.classLoader)
-                    else -> com.cardpersonality.honor.hook.oppo.OppoFaceHookEngine.install(lpparam.classLoader, proc)
+                ProviderClient.logOp("hook", "init", "wallet=${target.kind} pkg=$pkg proc=$proc")
+                when (target.kind) {
+                    Wallets.KIND_HONOR -> FaceHookEngine.install(lpparam.classLoader)
+                    else -> com.cardpersonality.honor.hook.oppo.OppoFaceHookEngine.install(
+                        lpparam.classLoader,
+                        proc,
+                        target.pkg,
+                    )
                 }
             } else {
                 HLog.lim("loaded_$pkg", 1) { "$ALIVE_MSG pkg=$pkg proc=$proc" }

@@ -18,7 +18,16 @@ object WalletScope {
 
     fun isHonor(walletPackage: String?): Boolean = normalize(walletPackage) == HONOR
 
-    fun isOppo(walletPackage: String?): Boolean = normalize(walletPackage) == OPPO
+    /** All OPPO/欧加 family candidate packages (real one is com.finshell.wallet). */
+    val OPPO_PACKAGES: Set<String> = setOf(
+        OPPO,
+        "com.coloros.wallet",
+        "com.oplus.wallet",
+        "com.oneplus.wallet",
+        "com.nearme.wallet",
+    )
+
+    fun isOppo(walletPackage: String?): Boolean = normalize(walletPackage) in OPPO_PACKAGES
 
     /** Storage key: Honor keeps the legacy unprefixed key; other wallets get a package prefix. */
     fun configFileKey(key: CardKey, walletPackage: String?): String {
@@ -31,7 +40,7 @@ object WalletScope {
         val idx = fileKey.indexOf(SEPARATOR)
         if (idx <= 0) return HONOR
         val pkg = fileKey.substring(0, idx)
-        return if (pkg == HONOR || pkg == OPPO) pkg else HONOR
+        return if (pkg == HONOR || pkg in OPPO_PACKAGES) pkg else HONOR
     }
 
     /** Legacy part of a storage key (`<type>:<identity>`). */
@@ -42,15 +51,19 @@ object WalletScope {
     }
 
     /** Human label for a wallet package. */
-    fun labelOf(walletPackage: String?): String = when (normalize(walletPackage)) {
+    fun labelOf(walletPackage: String?): String = when (val pkg = normalize(walletPackage)) {
         HONOR -> "荣耀钱包"
         OPPO -> "欧加钱包"
-        else -> normalize(walletPackage)
+        "com.coloros.wallet" -> "ColorOS 钱包"
+        "com.oplus.wallet" -> "OPPO 钱包"
+        "com.oneplus.wallet" -> "OnePlus 钱包"
+        "com.nearme.wallet" -> "欧加钱包（旧版）"
+        else -> pkg
     }
 
-    fun kindOf(walletPackage: String?): String = when (normalize(walletPackage)) {
+    fun kindOf(walletPackage: String?): String = when (val pkg = normalize(walletPackage)) {
         HONOR -> "honor"
-        OPPO -> "oppo"
-        else -> "unknown"
+        in OPPO_PACKAGES -> "oppo"
+        else -> if (pkg.isEmpty()) "unknown" else "unknown"
     }
 }

@@ -7,6 +7,18 @@
 
 （暂无）
 
+## [0.2.7] - 2026-11-16
+
+> 本轮以 **Pre-release** 发布。
+
+### 新增
+- **关于页「导出诊断报告」**：一键收集设备信息、root 环境（su 路径/`su -c id`/getprop/SELinux）、LSPosed 与模块状态（lspctl）、钱包与开关状态（已安装钱包/激活钱包/卡片配置摘要，卡号仅保留后 4 位）、模块操作记录（最近 300 条）、异常摘要，写入 `/sdcard/Download/honor_cards_personality/logs/diagnostic_yyyyMMdd-HHmmss.txt`；无 root 时明确标注且不崩溃。
+- **OpLog 操作日志**：面板与钱包进程关键操作（保存/应用/ZIP 导入导出/字体导入/刷新/钱包检测/hook 失败等）环形记录，供诊断报告读取。
+- **`scan_wallets`**：枚举 label 含「钱包/Wallet」的已安装应用，用于展示「检测到但未适配的钱包」（不自动 hook）。
+
+### 修复
+- **OPPO/欧加设备上「未检测到已安装的受支持钱包」**：补齐 Android 11+ 包可见性声明 —— manifest `<queries>` 声明荣耀 + 5 个欧加/OPPO 候选包（com.finshell.wallet / com.coloros.wallet / com.oplus.wallet / com.oneplus.wallet / com.nearme.wallet）；钱包候选注册表与 provider `wallets` 同步扩展；面板状态行/关于页/空态提示更新。
+
 ## [0.2.6] - 2026-11-16
 
 > 本轮按要求**不发布 GitHub Release**（仅源码/构建）。
@@ -103,7 +115,8 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
-[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.3...v0.2.4

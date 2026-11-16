@@ -191,6 +191,7 @@ fun HomeScreen(
                         cardCount = cards.size,
                         walletPackagesText = walletPackagesText,
                         onRefresh = { if (!loading) reloadKey++ },
+                        onOpenAbout = onOpenAbout,
                         onOpenSample = {
                             onOpenEditor(
                                 EditorTarget(
@@ -628,6 +629,7 @@ private fun EmptyState(
     cardCount: Int,
     walletPackagesText: String,
     onRefresh: () -> Unit,
+    onOpenAbout: () -> Unit,
     onOpenSample: () -> Unit,
 ) {
     Card(
@@ -659,6 +661,13 @@ private fun EmptyState(
                 style = MiuixTheme.textStyles.footnote2,
                 color = MiuixTheme.colorScheme.onBackgroundVariant,
             )
+            if (walletPackagesText.contains("未检测到")) {
+                Text(
+                    text = "请安装荣耀钱包或欧加钱包，并先打开一次本应用；若已安装仍显示未检测到，请确认系统钱包包名是否在已支持列表中。",
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onBackgroundVariant,
+                )
+            }
             Spacer(Modifier.height(6.dp))
             Button(
                 onClick = onRefresh,
@@ -666,6 +675,10 @@ private fun EmptyState(
                 colors = ButtonDefaults.buttonColorsPrimary(),
                 modifier = Modifier.widthIn(min = 160.dp),
             ) { Text(if (loading) "刷新中…" else "刷新") }
+            TextButton(
+                text = "查看支持的钱包",
+                onClick = onOpenAbout,
+            )
             TextButton(
                 text = "打开示例编辑器",
                 onClick = onOpenSample,
@@ -682,6 +695,8 @@ private fun formatTime(millis: Long): String {
         ""
     }
 }
+
+
 
 
 

@@ -8,6 +8,22 @@
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <!--
+      Package visibility (targetSdk 36): without a <queries> declaration PackageManager cannot see
+      other installed apps, which made the panel report "未检测到已安装的受支持钱包" on OPPO devices.
+      These entries let the provider detect every candidate wallet (installed/versionName/label).
+      QUERY_ALL_PACKAGES is intentionally NOT requested — the explicit list is enough for the
+      supported-wallet detection and a broader scan is not needed for hooking.
+    -->
+    <queries>
+        <package android:name="com.hihonor.wallet" />
+        <package android:name="com.finshell.wallet" />
+        <package android:name="com.coloros.wallet" />
+        <package android:name="com.oplus.wallet" />
+        <package android:name="com.oneplus.wallet" />
+        <package android:name="com.nearme.wallet" />
+    </queries>
+
+    <!--
       LSPosed module packaging (legacy Xposed API):
       * assets/xposed_init lists the entry class (com.cardpersonality.honor.hook.XposedEntry)
       * the meta-data below make LSPosed recognize this APK as a module

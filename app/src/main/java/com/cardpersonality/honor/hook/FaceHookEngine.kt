@@ -969,6 +969,11 @@ object FaceHookEngine {
             "applied face ${identity.fileKey} v=${resolved.version} to ${views.size} view(s): " +
                 views.joinToString(",") { it.second }
         }
+        ProviderClient.logOp(
+            "hook",
+            "apply",
+            "${identity.fileKey} v=${resolved.version} views=${views.size}",
+        )
     }
 
     private fun schedulePendingFaceRetries(identity: CardIdentity) {

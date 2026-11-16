@@ -172,10 +172,13 @@ re-enter hooked getters.
   - `0.2.6` — round 10: multi-wallet framework (Honor + OPPO/欧加钱包), wallet-scoped config
     keys, wallet detection provider API, per-wallet geometry, OPPO fail-open card-face hooks
     (static-only, no OPPO device). **No git tag / GitHub Release for this round.**
+  - `0.2.7` — round 11: fix "未检测到已安装的受支持钱包" on OPPO devices (manifest `<queries>`
+    package visibility + expanded candidate wallet registry), optional `scan_wallets` provider
+    call, diagnostics journal `OpLog` (`files/oplog.txt`). Pre-release this round is published
+    by the lead — the module agent only freezes the APK (no tag).
 - Release APKs are frozen as `work/module/poc/card-personality-v<N>-final.apk`; the current
-  build is `v33-final` (versionName 0.2.6 / versionCode 1), verified with
-  `aapt2 dump badging` (`versionCode='1' versionName='0.2.6'`). Round-10 did NOT create a tag
-  or GitHub Release (explicit user requirement) — `dist/` packaging only.
+  build is `v36-final` (versionName 0.2.7 / versionCode 1), verified with
+  `aapt2 dump badging` (`versionCode='1' versionName='0.2.7'`). The lead owns tagging/releases.
 
 Round-4 model additions (owned by ui-dev; JSON is backward-compatible: every new field has a
 default, and the hook layer never parses sticker/config geometry — it only uses `version` and
@@ -416,3 +419,32 @@ and hidden Shadow plugin class loaders are untouched), and never modify wallet d
   product decision is to exclude EID), desktop **widgets** (Seedling `RemoteViews` rendering in the
   launcher) and any face path that sets a `Bitmap` directly. These surfaces simply keep the
   wallet's own face; no hook attempts or partial replacements are made.
+## 15. Round-11: OPPO wallet detection fix + diagnostics journal (0.2.7)
+
+### 15.1 Why the panel said "未检测到已安装的受支持钱包"
+targetSdk 36 package visibility: without `<queries>`, `PackageManager.getPackageInfo()` for other
+apps throws/returns nothing, so the provider reported every candidate as not-installed (and the old
+registry only knew `com.finshell.wallet`). Fixes:
+- `AndroidManifest.xml` now declares `<queries>` with every candidate wallet package
+  (`com.hihonor.wallet`, `com.finshell.wallet`, `com.coloros.wallet`, `com.oplus.wallet`,
+  `com.oneplus.wallet`, `com.nearme.wallet`). `QUERY_ALL_PACKAGES` is intentionally NOT requested —
+  the explicit list is enough for supported-wallet detection.
+- `hook/Wallets.kt` registry expanded to the same six candidates with `kind=honor|oppo`
+  (Honor gets the native engine; every OPPO/欧加 family package is detected and, when it actually
+  contains the OPPO classes, uses the OPPO fail-open engine). `WalletScope`/`Wallets` treat all
+  OPPO-family packages as `oppo` for keys/geometry/labels.
+- Provider `"wallets"` returns all candidates with `package/label/kind/installed/versionName` plus
+  `activeWalletPackage`. `"scan_wallets"` additionally enumerates installed apps whose label
+  mentions 钱包/Wallet (with `known` flag) so the panel can show "检测到未适配钱包" — read-only, no
+  auto-hooking of unknown packages.
+
+### 15.2 Diagnostics journal (`data/OpLog.kt`)
+- Ring of the last **300** entries in `files/oplog.txt`, thread-safe, one line per event:
+  `时间|来源|操作|详情`.
+- Panel process writes directly; the wallet process (hook side) appends through the provider
+  `"oplog"` call (`ProviderClient.logOp`, fire-and-forget) so there is a single journal file.
+- Wired events: config save/clear, render export ok/fail, ZIP import/export, font import,
+  wallet refresh broadcast, wallet report, wallet detection, Honor/OPPO hook init + armed/skipped
+  process, face applied in the wallet, and provider fail-open (`hook|fail-open`).
+- UI API (About/diagnostic report): `OpLog.read(ctx, limit)`, `OpLog.report(ctx)`,
+  `OpLog.path(ctx)`, `OpLog.file(ctx)`, `OpLog.record(ctx, source, action, detail)`.
