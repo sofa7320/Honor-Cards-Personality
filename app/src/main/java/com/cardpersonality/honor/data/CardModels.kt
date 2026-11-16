@@ -105,6 +105,11 @@ data class CardInfo(
     val walletPackage: String = WalletScope.HONOR,
     /** Round-10: "honor"/"oppo" (derived from [walletPackage] when the report omits it). */
     val walletKind: String = WalletScope.kindOf(WalletScope.HONOR),
+    /**
+     * Round-14: card balance text reported by some wallets (OPPO NfcCard getAcctAmount/getBalance,
+     * e.g. "78.60"); empty when unknown. Display-only, never used for face matching.
+     */
+    val balance: String = "",
 ) {
     val type: String get() = key.type
 
@@ -121,6 +126,7 @@ data class CardInfo(
         if (faceUrl != null) put("faceUrl", faceUrl) else put("faceUrl", JSONObject.NULL)
         put("wallet", walletPackage)
         put("walletKind", walletKind)
+        if (balance.isNotEmpty()) put("balance", balance)
     }
 
     companion object {
@@ -141,6 +147,7 @@ data class CardInfo(
                 faceUrl = o.optString("faceUrl", "").ifEmpty { null }.takeUnless { it == "null" },
                 walletPackage = wallet,
                 walletKind = walletKind,
+                balance = o.optString("balance", ""),
             )
         }
     }

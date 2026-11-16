@@ -185,10 +185,17 @@ re-enter hooked getters.
     round-corner-safe replacement via local file path (no direct setImageBitmap), CNIV signature
     fixes, config prewarm, URL normalization + dual identity tables, pair/capture/source
     diagnostics. Stacked PR (feat/round13 ← feat/round12), no tag/Release.
+  - `0.2.10` — round 14: port of the friend module's OPPO capability — 14 CircleNetworkImageView
+    methods + Fin* container setters, `isCardFace` container-ancestor semantics, 11 model getters
+    (read-only) with name/type/balance, `file://` replacement into wallet private
+    `files/oppo_faces/` with wallet-side `cardpersonality_oppo_map.json` cache (provider-outage
+    tolerant), widgetHits/fileReplacements/recordedModels diagnostics, CONFIG_CHANGED view reload.
+    Pre-release published by the lead; module side does not tag/push main.
 - Release APKs are frozen as `work/module/poc/card-personality-v<N>-final.apk`; the current
-  build is `v39-final` (versionName 0.2.9 / versionCode 1), verified with
-  `aapt2 dump badging` (`versionCode='1' versionName='0.2.9'`). The lead owns tagging/releases;
-  rounds 12/13 are stacked PR-only (feat/round13 ← feat/round12, no tag, no Release, no main merge).
+  build is `v40-final` (versionName 0.2.10 / versionCode 1), verified with
+  `aapt2 dump badging` (`versionCode='1' versionName='0.2.10'`). The lead owns tagging/releases;
+  rounds 12/13/14 are stacked-PR work (feat/round14 ← feat/round13 ← feat/round12; no tag/Release
+  from the module agent, main is never pushed by it).
 
 Round-4 model additions (owned by ui-dev; JSON is backward-compatible: every new field has a
 default, and the hook layer never parses sticker/config geometry — it only uses `version` and
@@ -565,3 +572,50 @@ string and its normalised form so theme/URL changes still match.
   `oppo|ha-method`, `oppo|hb-method`, `oppo|hook-miss`.
 - Honor engine (`FaceHookEngine`) unchanged; all OPPO additions are main-process-only and fail-open.
   No OPPO device is used for validation (static only).
+## 18. Round-14: friend-module OPPO capability port (0.2.10)
+
+Port of `com.crrashh.opcardcustomizer` (`work/re/oppo/FRIEND-MODULE.md`) onto our legacy
+XposedBridge + provider architecture. All OPPO-side, main wallet process only, fail-open; the Honor
+engine (`FaceHookEngine`) is untouched.
+
+### 18.1 Widget hooks
+- `CircleNetworkImageView` **14 methods** (friend list): `setImageUrl`, `setImageBitmap`,
+  `e1`, `g1`, `j1`, `k1`, `d1`, `a1`, `b1`, `f1`, `h1`, `i1`, `setImageUrlByTemp`, `A0` — plus our
+  earlier low-level funnels (`r1`, `setSvgUrl`, `y0`, `x0`, `F0`). Hooked by class + method name +
+  shape (>=1 param, first param `String`); every String argument is a replacement candidate.
+- Fin* container setters: `FinBigCardFaceView#setCardFaceUrl`,
+  `FinCustomCardView#setCardFaceUrl`, `FinSmallCardFaceView#setImageBitmap/#setCardFaceUrl`,
+  `FinUINfcCardFaceView#showCardImg`.
+- `isCardFace` semantics copied from the friend module: the target class is one of the 4 containers,
+  or an ancestor within 8 `View.getParent()` levels is. Only replacement/snapshot decisions use it;
+  the wallet's return values are never modified.
+
+### 18.2 Model getters (read-only)
+The friend module's 11-class `CARD_MODEL_GETTERS` table is hooked as **after-hooks that never modify
+the returned value**: `NfcCard`, `NfcCardDetail`, `CardDetailRsp`, `CardDetailRspVo`, `PayCardInfo`,
+`supercard.CardInfo`, `CarInfo`, `CardTheme`, `EntranceCard`, `VerifyIssuerCardRsp`, `BackupCard`.
+For each observed URL it records `url -> CardIdentity(type,id)` plus `name`/`type`/`balance`
+(`getCardName/getDisplayName/getName/getNickName/getCardNickName`,
+`getAcctAmount`/`getBalance`), and reports the card with `name`/`balance` (report JSON adds
+`balance`; `CardInfo.balance` parses it). Type rules copied from the friend module's `cardTypeOf`
+(`cardType` 1=bank, 5=transit, 6=access, 33=transit; `appCode`/`aid` fallbacks) mapped to our 6
+supported types.
+
+### 18.3 file:// replacement + wallet-side cache
+- When a widget receives a URL mapped to a configured OPPO card, the module fetches our rendered JPEG
+  from the provider, re-encodes it with the friend module's constraints (**long side ≤1600, JPEG q88
+  stepping down to ≤700 KB**) and writes it to the wallet's private
+  `filesDir/oppo_faces/card_<md5>.jpg`.
+- The String argument is replaced with **`file://<absolute path>`** (friend-verified Glide
+  `StringLoader` path; proven to keep the wallet's rounded-corner transform and cache).
+- A wallet-side map `files/cardpersonality_oppo_map.json` (`url -> {file, fileKey, version,}`) keeps
+  replacement working when the provider is temporarily unavailable; it is invalidated when the
+  config version changes and re-fetched. Any failure falls back to the original URL (never crashes).
+
+### 18.4 Refresh & diagnostics
+- `CONFIG_CHANGED` clears the bitmap/map caches and reloads registered views (WeakReference table
+  `viewToLastUrl`); a best-effort `setImageUrl(file://…)` call re-triggers the wallet's Glide.
+- `engine_state` adds `widgetHits`, `fileReplacements`, `recordedModels`, `bridgeMode="provider"`
+  (plus the round-13 `pairCount/captureCount/faceSource`); OpLog adds `oppo|model-hit`,
+  `oppo|model-record`, `oppo|file-replace`, `oppo|file-replace-fail`, `oppo|model-record-fail`,
+  `oppo|cniv-hooks`, `oppo|config-prewarmed`.

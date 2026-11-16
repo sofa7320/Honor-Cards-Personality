@@ -214,6 +214,7 @@ pwsh -File scripts/build.ps1        # 默认 :app:assembleDebug
 
 | 版本        | 主要变更                                                                                                 |
 | --------- | ---------------------------------------------------------------------------------------------------- |
+| **0.2.10** | 移植朋友模块 oplus-card-customizer 的 OPPO 卡面读取/替换能力（CircleNetworkImageView 14 入口 + Fin* 容器、11 模型 getter 只读观测与 name/type/balance 上报、file:// 钱包私有目录替换、oppo 映射缓存、诊断计数）；关于页开源支持新增 oplus-card-customizer；Pre-release |
 | **0.2.9** | OPPO 读取链路修复（抓原图 FaceCapture、L0 配对并上报卡片、进程内读本地卡面文件、按 getCardType 修正类型映射、圆角安全的本地文件替换、CNIV 参数修正、engine_state pair/capture/faceSource）；关于页新增「开源支持」（Miuix/LSPosed）、「链接」改「反馈」、图标放大；PR 提交，不发 Release |
 | **0.2.8** | OPPO/欧加钱包 5.52.0 适配推进（A0/y0/x0/setSvgUrl/F0 入口、卡片上报兜底 identity、引擎诊断）；关于页返回/图标/文案修正，支持钱包仅两项；首页状态行仅包名；PR 提交，不发 Release |
 | **0.2.7** | 修复 OPPO/欧加设备检测不到钱包（`<queries>` 6 个候选钱包包 + scan_wallets）；关于页新增「导出诊断报告」（设备/root/属性/开关/LSPosed/操作记录 → Download/honor_cards_personality/logs）；新增 OpLog 操作日志；Pre-release |

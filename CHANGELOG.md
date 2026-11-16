@@ -7,6 +7,20 @@
 
 （暂无）
 
+## [0.2.10] - 2026-11-16
+
+> 本轮通过 **Pull Request**（stacked）提交，不直接合并 `main`；以 **Pre-release** 发布。
+> OPPO 系改动为静态移植实现，无需实机验证（维护者无 OPPO 设备）。
+
+### 新增
+- **OPPO 卡面能力移植**（参考朋友模块 `oplus-card-customizer` / com.crrashh.opcardcustomizer）：
+  - `CircleNetworkImageView` 14 个卡面入口方法全部覆盖（setImageUrl/setImageBitmap/e1/g1/j1/k1/d1/f1/h1/i1/a1/b1/setImageUrlByTemp/A0）。
+  - 覆盖 `FinBigCardFaceView`、`FinCustomCardView`、`FinSmallCardFaceView`、`FinUINfcCardFaceView` 容器方法；"是卡面"判定含 View 向上 8 层 parent 匹配容器。
+  - 11 个卡数据模型 getter 只读观测，记录 url→(aid/appCode/cardType/cardNo/name/balance)，按 getCardType() 与 appCode/aid 规则判定卡类型并上报（面板卡片显示名称/类型）。
+  - 替换采用朋友已验证的 `file://` 钱包私有目录方案：按长边≤1600、JPEG q88 递减≤700KB 落盘到钱包 `filesDir/oppo_faces/`，将参数替换为 file:// 路径交钱包 Glide 加载（保留圆角/缩放/缓存）；维护钱包侧 `cardpersonality_oppo_map.json` 缓存，provider 不可用时仍可替换。
+  - 诊断增加 widgetHits / fileReplacements / recordedModels；配置变更后通过 WeakReference 视图注册表重新加载。
+- **关于页「开源支持」**新增 `oplus-card-customizer` 行（白字标题 + 灰字说明，点击打开仓库）。
+
 ## [0.2.9] - 2026-11-16
 
 > 本轮通过 **Pull Request**（stacked）提交，不直接合并 `main`，不发布 GitHub Release。
@@ -151,7 +165,8 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
-[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.9...HEAD
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.10...HEAD
+[0.2.10]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.6...v0.2.7
