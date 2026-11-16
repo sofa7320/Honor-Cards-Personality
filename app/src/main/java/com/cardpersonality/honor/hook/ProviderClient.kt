@@ -40,7 +40,9 @@ object ProviderClient {
     private const val CALL_REPORT = "report"
     private const val CALL_SAVE_ORIGINAL = "saveOriginalFace"
     private const val CALL_ORIGINAL_EXISTS = "originalExists"
+    private const val CALL_REFRESH_ORIGINAL = "refreshOriginal"
 private const val CALL_OPLOG = "oplog"
+private const val CALL_ENGINE_HEARTBEAT = "engine_heartbeat"
     private const val EXTRA_JSON = "json"
     private const val EXTRA_VERSION = "version"
     private const val EXTRA_TYPE = "type"
@@ -405,6 +407,52 @@ private const val CALL_OPLOG = "oplog"
         }
     }
 
+    /**
+     * Round-15: immediate engine heartbeat. Called from the wallet process as soon as the engine is
+     * installed (even with 0 cards / 0 hooks) so the panel can distinguish
+     * "LSPosed scope not enabled / not injected" from "injected but no cards observed".
+     */
+    /**
+     * Round-16: context-based heartbeat (used from the wallet's Application#onCreate hook, where the
+     * provider app context is definitely available). Returns true when the provider accepted it.
+     */
+    fun engineHeartbeatUsing(ctx: Context, json: String): Boolean {
+        return try {
+            val extras = Bundle().apply { putString(EXTRA_ENGINE, json) }
+            val result = ctx.contentResolver.call(Uri.parse(BASE_URI), CALL_ENGINE_HEARTBEAT, null, extras)
+            result?.getBoolean(EXTRA_OK, false) == true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /** Round-16: journal entry with an explicit context (heartbeat hook path). */
+    fun logOpUsing(ctx: Context, source: String, action: String, detail: String = "") {
+        try {
+            val extras = Bundle().apply {
+                putString(EXTRA_SOURCE, source)
+                putString(EXTRA_ACTION, action)
+                putString(EXTRA_DETAIL, detail)
+            }
+            ctx.contentResolver.call(Uri.parse(BASE_URI), CALL_OPLOG, null, extras)
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun engineHeartbeat(json: String) {
+        try {
+            executor.execute {
+                try {
+                    val ctx = appContext() ?: return@execute
+                    val extras = Bundle().apply { putString(EXTRA_ENGINE, json) }
+                    ctx.contentResolver.call(Uri.parse(BASE_URI), CALL_ENGINE_HEARTBEAT, null, extras)
+                } catch (_: Throwable) {
+                }
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
     /** Fire-and-forget report from hot hook paths (main thread safe). */
     fun reportAsync(cardsJson: String) {
         try {
@@ -432,6 +480,21 @@ private const val CALL_OPLOG = "oplog"
             result != null && !result.getBoolean(EXTRA_EXISTS, false)
         } catch (t: Throwable) {
             onFailure("originalExists threw: ${t.javaClass.simpleName}: ${t.message}")
+            false
+        }
+    }
+
+    /** Round-22: drop the cached current-face snapshot so the next view draw re-captures it. */
+    fun refreshOriginal(type: String, identity: String): Boolean {
+        return try {
+            val ctx = appContext() ?: return false
+            val extras = Bundle().apply {
+                putString(EXTRA_TYPE, type)
+                putString(EXTRA_ID, identity)
+            }
+            val result = ctx.contentResolver.call(Uri.parse(BASE_URI), CALL_REFRESH_ORIGINAL, null, extras)
+            result?.getBoolean(EXTRA_OK, false) == true
+        } catch (_: Throwable) {
             false
         }
     }

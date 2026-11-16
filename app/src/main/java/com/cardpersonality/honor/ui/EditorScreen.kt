@@ -220,7 +220,7 @@ fun EditorScreen(
 ) {
     val scope = rememberCoroutineScope()
     val initial = remember(target.key) {
-        FaceRepository.loadCard(ctx, target.key) ?: CardFaceConfig()
+        FaceRepository.loadCard(ctx, target.key, target.walletPackage) ?: CardFaceConfig()
     }
     var cfg by remember(target.key) { mutableStateOf(initial) }
     var baseline by remember(target.key) { mutableStateOf(initial) }
@@ -228,7 +228,7 @@ fun EditorScreen(
     // on a sticker does not recompose the whole editor (image tab, dialogs, etc.).
     val selectedSticker = remember { mutableStateOf<String?>(null) }
     var hasStoredCustomFace by remember(target.key) {
-        mutableStateOf(FaceRepository.hasCustomFace(ctx, target.key.type, target.key.id))
+        mutableStateOf(FaceRepository.hasCustomFace(ctx, target.key.type, target.key.id, target.walletPackage))
     }
     var tab by remember { mutableIntStateOf(0) }
     var saving by remember { mutableStateOf(false) }
@@ -318,11 +318,11 @@ fun EditorScreen(
         saving = true
         scope.launch {
             withContext(Dispatchers.IO) {
-                runCatching { FaceRepository.saveCard(ctx, target.key, cfg) }
+                runCatching { FaceRepository.saveCard(ctx, target.key, cfg, target.walletPackage) }
             }
             saving = false
             showExitDialog = false
-            Toast.makeText(ctx, "已保存，切换回荣耀钱包即可生效", Toast.LENGTH_SHORT).show()
+            Toast.makeText(ctx, "已保存，切换回钱包即可生效", Toast.LENGTH_SHORT).show()
             if (thenExit) onDone()
         }
     }
@@ -484,7 +484,7 @@ fun EditorScreen(
                 if (imported != null) {
                     runCatching {
                         withContext(Dispatchers.IO) {
-                            FaceRepository.saveCard(ctx, target.key, imported)
+                            FaceRepository.saveCard(ctx, target.key, imported, target.walletPackage)
                             FaceRepository.notifyWalletConfigChanged(ctx)
                         }
                     }
@@ -840,12 +840,17 @@ fun EditorScreen(
                         scope.launch {
                             withContext(Dispatchers.IO) {
                                 runCatching {
-                                    FaceRepository.restoreOriginalFace(ctx, target.key)
+                                    FaceRepository.clearCard(ctx, target.key, target.walletPackage)
+                                    // Round 22: invalidate cached wallet-original snapshots so the
+                                    // preview re-captures the current (restored) card face.
+                                    FaceRepository.refreshOriginalSnapshots(
+                                        ctx, target.key.type, target.key.id,
+                                    )
                                 }
                             }
                             val stillCustom = withContext(Dispatchers.IO) {
                                 FaceRepository.hasCustomFace(
-                                    ctx, target.key.type, target.key.id,
+                                    ctx, target.key.type, target.key.id, target.walletPackage,
                                 )
                             }
                             Toast.makeText(
@@ -2390,6 +2395,8 @@ private fun List<StickerSpec>.move(from: Int, to: Int): List<StickerSpec> {
     list.add(to, item)
     return list
 }
+
+
 
 
 

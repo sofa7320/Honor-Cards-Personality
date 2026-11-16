@@ -23,12 +23,6 @@
         <package android:name="com.nearme.wallet" />
     </queries>
 
-    <!--
-      LSPosed module packaging (legacy Xposed API):
-      * assets/xposed_init lists the entry class (com.cardpersonality.honor.hook.XposedEntry)
-      * the meta-data below make LSPosed recognize this APK as a module
-      * de.robv.* classes are compileOnly stubs and MUST NOT appear in the APK
-    -->
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -36,21 +30,7 @@
         android:label="@string/app_name"
         android:supportsRtl="true">
 
-        <meta-data
-            android:name="xposedmodule"
-            android:value="true" />
-        <meta-data
-            android:name="xposeddescription"
-            android:value="荣耀卡面工坊 · 荣耀钱包自定义卡面" />
-        <meta-data
-            android:name="xposedminversion"
-            android:value="93" />
-        <!-- Enables XSharedPreferences fallback for the config channel -->
-        <meta-data
-            android:name="xposedsharedprefs"
-            android:value="true" />
-
-        <!-- Launcher activity (thin Compose host; ui-dev supplies the root composable) -->
+    <!-- Launcher activity (thin Compose host; ui-dev supplies the root composable) -->
         <activity
             android:name=".MainActivity"
             android:exported="true"

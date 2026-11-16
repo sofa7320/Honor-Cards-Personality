@@ -1,4 +1,6 @@
 package com.cardpersonality.honor.hook.oppo
+import com.cardpersonality.honor.hook.api.HookBridge
+import com.cardpersonality.honor.hook.api.MethodHook
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -23,8 +25,6 @@ import com.cardpersonality.honor.hook.ProviderClient
 import com.cardpersonality.honor.hook.Wallets
 import com.cardpersonality.honor.hook.hookLogged
 import com.cardpersonality.honor.hook.safeAfter
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -62,7 +62,7 @@ import java.util.concurrent.atomic.AtomicLong
 object OppoFaceHookEngine {
     const val WALLET_PACKAGE = "com.finshell.wallet"
 
-    private val handles = CopyOnWriteArrayList<XC_MethodHook.Unhook>()
+    private val handles = CopyOnWriteArrayList<MethodHook.Unhook>()
     @Volatile private var installed = false
     @Volatile private var armed = false
     @Volatile private var configReceiverRegistered = false
@@ -98,7 +98,37 @@ object OppoFaceHookEngine {
     private val faceSource = ConcurrentHashMap<String, AtomicLong>()
     private val hitLogged = ConcurrentHashMap<String, AtomicBoolean>()
 
+    // Round-15 diagnostics: heartbeat + counters so the panel can tell "not injected" from
+    // "injected but no cards observed".
+    @Volatile private var processName: String = ""
+    @Volatile private var isMainProcess: Boolean = false
+    @Volatile private var classLoaderName: String = ""
+    private val observedModels = AtomicLong(0L)
+    private val reportedCards = AtomicLong(0L)
+    private val sentCardKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val installedLabels = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val skippedNoIdentity = AtomicLong(0L)
+    private val skipPlaceholder = AtomicLong(0L)
+    private val lastFaceSource = java.util.concurrent.ConcurrentHashMap<String, String>()
+    @Volatile private var lastHookReportAt: Long = 0L
+    @Volatile private var heartbeatSent = false
+    @Volatile private var daoHooksInstalled = false
+    @Volatile private var heartbeatContext: android.content.Context? = null
+    @Volatile private var applicationHookInstalled = false
+    private val retriesScheduled = AtomicBoolean(false)
+
     private const val CONFIG_CHANGED_ACTION = "com.cardpersonality.honor.CONFIG_CHANGED"
+
+    /** Key wallet classes whose presence proves the engine is injected into the right dex. */
+    private val CLASS_PROBES = linkedMapOf(
+        "CircleNetworkImageView" to "com.finshell.finui.widget.imageview.CircleNetworkImageView",
+        "NfcCard" to "com.nearme.wallet.db.NfcCard",
+        "NfcCardRoomDao_Impl" to "com.nearme.wallet.db.NfcCardRoomDao_Impl",
+        "FinBigCardFaceView" to "com.finshell.finui.widget.atomic.FinBigCardFaceView",
+        "CardCoverSettingUtil" to "com.finshell.finui.utils.CardCoverSettingUtil",
+    )
+
+    private const val MODULE_VERSION = "0.2.10"
     private const val MAX_URL_LOGS = 20
     private const val MAX_LOCAL_BYTES = 3 * 1024 * 1024
     private const val MAX_LOCAL_LONG_SIDE = 2560
@@ -149,6 +179,12 @@ object OppoFaceHookEngine {
 
     private val BALANCE_GETTERS = listOf("getAcctAmount", "getBalance")
 
+    /** DAO elements are plain Room entities; try every known face-url getter. */
+    private val FACE_URL_GETTERS_FOR_DAO = listOf(
+        "getCardImg", "getNewCardImg", "getLocalImgPath", "getLocalImgSelPath",
+        "getCardImgUrl", "getImgUrl", "getImageUrl", "getCardFaceUrl",
+    )
+
     private data class FaceMeta(val name: String, val type: String?, val balance: String)
 
     private data class MapEntry(val file: String, val fileKey: String, val version: Int)
@@ -163,47 +199,75 @@ object OppoFaceHookEngine {
         if (installed) return
         installed = true
         this.walletPackage = walletPackage
+        this.processName = processName ?: ""
+        this.classLoaderName = classLoader.toString()
+        // Round-16: relaxed default-process detection (OPPO may use pkg or pkg:main).
+        this.isMainProcess = this.processName.isEmpty() ||
+            this.processName == walletPackage ||
+            this.processName == "$walletPackage:main"
         try {
             ProviderClient.walletPackage = walletPackage
-            ProviderClient.engineStateProvider = { engineStateJson() }
+            // Round-18: OPPO IPC is the loopback socket bridge (ContentProvider is unreachable
+            // because of targetSdk 36 package visibility; non-main processes have no Context).
+            OppoBridge.start(walletPackage) { engineStateJson() }
+            OppoBridge.setConfigListener { refreshAll() }
+            OppoBridge.setConnectedListener { forceReportNow() }
+            OppoBridge.setCardSnapshotSupplier { cardsJson() }
+            OppoBridge.setOriginalInvalidatedListener { type, id -> FaceCapture.invalidate(type, id) }
+            FaceCapture.backend = object : FaceCapture.Backend {
+                override fun snapshotNeeded(type: String, id: String): Boolean =
+                    OppoBridge.originalNeeded(type, id)
+
+                override fun save(type: String, id: String, jpeg: ByteArray): Boolean {
+                    val ok = OppoBridge.saveOriginal(type, id, jpeg)
+                    if (ok) OppoBridge.sendOriginal(type, id, jpeg)
+                    return ok
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        // Round-16: NO process gate — every process installs the hooks (class lookups simply miss
+        // where the classes are absent) and every process proves injection with a heartbeat.
+        try {
+            sendHeartbeat("install")
         } catch (_: Throwable) {
         }
         try {
-            val mainProcess = processName.isNullOrEmpty() || processName == walletPackage
-            if (!mainProcess) {
-                HLog.i("OPPO engine: skip process '$processName' (card UI runs in the main process)")
-                ProviderClient.logOp("oppo", "skip-process", "pkg=$walletPackage proc=$processName")
-                return
-            }
-            HLog.i("OPPO engine r14: installing fail-open hooks (wallet=$walletPackage)")
-            ProviderClient.logOp("oppo", "init", "pkg=$walletPackage ver=0.2.10")
-            hookModelGetters(classLoader)      // model observation (recordedModels)
-            hookNetworkImageViews(classLoader) // CNIV 14 methods
-            hookContainers(classLoader)        // Fin* containers
-            hookBrightnessLoader(classLoader)  // H-E brightness
-            hookBrightnessFetch(classLoader)   // H-E2 brightness fetch
+            installApplicationHook(classLoader)
+        } catch (_: Throwable) {
+        }
+        try {
+            hookModelGetters(classLoader)          // model observation (all processes)
+            hookNetworkImageViews(classLoader)     // CNIV 14 methods
+            hookContainers(classLoader)            // Fin* containers
+            hookBrightnessLoader(classLoader)      // H-E brightness
+            hookBrightnessFetch(classLoader)       // H-E2 brightness fetch
+            hookDaoQueries(classLoader, "install") // DAO enumeration fallback (all processes)
             ensureRefreshReceiver()
             armed = handles.isNotEmpty()
-            HLog.i("OPPO engine r14: armed=$armed hooks=${handles.size}")
-            ProviderClient.logOp(
+            HLog.i("OPPO engine r16: armed=$armed hooks=${handles.size} proc=$processName default=$isMainProcess")
+            OppoBridge.oplog(
                 "oppo",
                 "armed",
-                "pkg=$walletPackage hooks=${handles.size} attempted=${attemptedHooks.get()} " +
-                    "installed=${installedHooks.get()} missed=${missedTargets.size}",
+                "proc=$processName default=$isMainProcess hooks=${handles.size} " +
+                    "attempted=${attemptedHooks.get()} installed=${installedHooks.get()} " +
+                    "missed=${missedTargets.size} classProbes=${probeClasses(classLoader)}",
             )
-            worker.execute {
-                try {
-                    ProviderClient.config(force = true)
-                    ProviderClient.logOp("oppo", "config-prewarmed", "wallet=$walletPackage")
-                } catch (_: Throwable) {
-                }
-            }
         } catch (t: Throwable) {
             HLog.e("OPPO engine install failed (fail-open)", t)
-            ProviderClient.logOp("oppo", "init-fail", t.javaClass.simpleName + ": " + t.message)
+            OppoBridge.oplog("oppo", "init-fail", t.javaClass.simpleName + ": " + t.message)
         }
+        // Heartbeat retries (also covers the case where the context is unavailable right now).
+        startHeartbeatLoop()
+        // DAO classes may not be loaded at install time: retry once after 3 s.
+        mainHandler.postDelayed({
+            try {
+                hookDaoQueries(classLoader, "delayed")
+            } catch (_: Throwable) {
+            }
+        }, 3_000L)
+        // Round-18: config/faces arrive over the loopback bridge (no provider prewarm needed).
     }
-
     fun isArmed(): Boolean = armed
 
     // ================================================================ model getters (read-only)
@@ -218,13 +282,13 @@ object OppoFaceHookEngine {
                         if (method.returnType != String::class.java) continue
                         val unhook = attemptHook("model:$className#$getterName") {
                             method.isAccessible = true
-                            XposedBridge.hookMethod(method, safeAfter("OPPO-model-$className-$getterName") { param ->
+                            HookBridge.hookMethod(method, safeAfter("OPPO-model-$className-$getterName") { param ->
                                 val url = param.getResult() as? String
                                 if (url.isNullOrBlank()) return@safeAfter
                                 try {
                                     recordModel(param.thisObject, url, className, getterName)
                                 } catch (t: Throwable) {
-                                    ProviderClient.logOp("oppo", "model-record-fail", t.javaClass.simpleName)
+                                    OppoBridge.oplog("oppo", "model-record-fail", t.javaClass.simpleName)
                                 }
                             })
                         }
@@ -235,20 +299,23 @@ object OppoFaceHookEngine {
                 recordMiss("modelclass:$className", t)
             }
         }
-        ProviderClient.logOp("oppo", "model-hooks", "classes=${CARD_MODEL_GETTERS.size}")
+        OppoBridge.oplog("oppo", "model-hooks", "classes=${CARD_MODEL_GETTERS.size}")
     }
 
     /** After-hook body: identity + metadata + report; never modifies the getter value. */
     private fun recordModel(card: Any?, url: String, className: String, getterName: String) {
         val meta = metaOf(card, className)
         urlMeta[url] = meta
-        val identity = identityOf(card, className) ?: fallbackIdentity(url, className, getterName)
+        observedModels.incrementAndGet()
+        val direct = identityOf(card, className)
+        if (direct == null) skippedNoIdentity.incrementAndGet()
+        val identity = direct ?: fallbackIdentity(url, className, getterName)
         aliasUrl(url, identity)
         recordedModels.incrementAndGet()
         val firstHit = hitLogged.getOrPut("model:$className#$getterName") { AtomicBoolean(false) }
             .compareAndSet(false, true)
         if (firstHit) {
-            ProviderClient.logOp(
+            OppoBridge.oplog(
                 "oppo",
                 "model-hit",
                 "first $className#$getterName id=${identity.id} type=${identity.type}",
@@ -258,7 +325,7 @@ object OppoFaceHookEngine {
         handleFaceSource(identity, url)
         val n = recordedModels.get()
         if (n <= MAX_URL_LOGS) {
-            ProviderClient.logOp(
+            OppoBridge.oplog(
                 "oppo",
                 "model-record",
                 "#$n src=${className.substringAfterLast('.')}::$getterName " +
@@ -405,7 +472,7 @@ object OppoFaceHookEngine {
             installedMethods++
             val unhook = attemptHook("cniv:${method.name}/${method.parameterCount}") {
                 method.isAccessible = true
-                XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                HookBridge.hookMethod(method, object : MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam?) {
                         try {
                             param ?: return
@@ -418,7 +485,7 @@ object OppoFaceHookEngine {
             if (unhook != null) handles.add(unhook)
         }
         if (installedMethods == 0) recordMiss("methods:CNIV", null)
-        ProviderClient.logOp("oppo", "cniv-hooks", "methods=$installedMethods")
+        OppoBridge.oplog("oppo", "cniv-hooks", "methods=$installedMethods")
     }
 
     private fun hookContainers(cl: ClassLoader) {
@@ -433,7 +500,7 @@ object OppoFaceHookEngine {
                     count++
                     val unhook = attemptHook("container:${className.substringAfterLast('.')}#${method.name}") {
                         method.isAccessible = true
-                        XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                        HookBridge.hookMethod(method, object : MethodHook() {
                             override fun beforeHookedMethod(param: MethodHookParam?) {
                                 try {
                                     param ?: return
@@ -457,7 +524,7 @@ object OppoFaceHookEngine {
      * our configured OPPO cards, replace it with the wallet-side `file://` face; when the card has
      * no custom face, schedule an original-face snapshot (R2) for real card-face views.
      */
-    private fun handleWidgetCall(param: XC_MethodHook.MethodHookParam) {
+    private fun handleWidgetCall(param: MethodHook.MethodHookParam) {
         val args = param.args ?: return
         if (args.isEmpty()) return
         val host = param.thisObject
@@ -479,8 +546,7 @@ object OppoFaceHookEngine {
                 if (isFace) widgetHits.incrementAndGet()
                 recordCard(identity, sanitizedFaceUrl(url), urlMeta[url]?.name ?: "", urlMeta[url]?.balance ?: "")
             } else if (isFace) {
-                val resolved = ProviderClient.resolve(identity.type, identity.id)
-                if (resolved == null && hostView is ImageView) {
+                if (OppoBridge.resolveFace(identity) == null && hostView is ImageView) {
                     scheduleCapture(hostView, identity, "widget")
                 }
             }
@@ -533,6 +599,12 @@ object OppoFaceHookEngine {
 
     private fun handleFaceSource(identity: CardIdentity, faceUrl: String) {
         val norm = normalizeUrl(faceUrl) ?: return
+        // Round-22: wallet-native face changed (or reset) → drop the stale original snapshot.
+        val previous = lastFaceSource.put(identity.fileKey, norm)
+        if (previous != null && previous != norm) {
+            OppoBridge.invalidateOriginal(identity.type, identity.id)
+            FaceCapture.invalidate(identity.type, identity.id)
+        }
         if (!isHttpUrl(norm)) {
             worker.execute { readLocalFaceAndSend(identity, norm) }
         }
@@ -540,7 +612,7 @@ object OppoFaceHookEngine {
 
     private fun readLocalFaceAndSend(identity: CardIdentity, path: String) {
         try {
-            if (!ProviderClient.faceSnapshotNeeded(identity.type, identity.id)) return
+            if (!OppoBridge.originalNeeded(identity.type, identity.id)) return
             val file = File(path)
             if (!file.isFile) {
                 bumpSource("none")
@@ -572,29 +644,30 @@ object OppoFaceHookEngine {
                 bumpSource("none")
                 return
             }
-            if (ProviderClient.saveOriginalFace(identity.type, identity.id, bytes)) {
+            if (OppoBridge.saveOriginal(identity.type, identity.id, bytes)) {
                 bumpSource("file")
-                ProviderClient.logOp("oppo", "local-file-captured", "${identity.id} ${bytes.size}B")
+                OppoBridge.sendOriginal(identity.type, identity.id, bytes)
+                OppoBridge.oplog("oppo", "local-file-captured", "${identity.id} ${bytes.size}B")
             } else {
                 bumpSource("none")
             }
         } catch (t: Throwable) {
-            ProviderClient.logOp("oppo", "local-file-fail", t.javaClass.simpleName)
+            OppoBridge.oplog("oppo", "local-file-fail", t.javaClass.simpleName)
             bumpSource("none")
         }
     }
 
     private fun scheduleCapture(view: ImageView, identity: CardIdentity, source: String) {
         try {
-            if (!ProviderClient.faceSnapshotNeeded(identity.type, identity.id)) return
+            if (!OppoBridge.originalNeeded(identity.type, identity.id)) return
             FaceCapture.schedule(view, identity)
             captureCount.incrementAndGet()
             bumpSource("bitmap")
             if (captureCount.get() <= MAX_URL_LOGS) {
-                ProviderClient.logOp("oppo", "capture-scheduled", "${identity.id} src=$source")
+                OppoBridge.oplog("oppo", "capture-scheduled", "${identity.id} src=$source")
             }
         } catch (t: Throwable) {
-            ProviderClient.logOp("oppo", "capture-fail", t.javaClass.simpleName)
+            OppoBridge.oplog("oppo", "capture-fail", t.javaClass.simpleName)
         }
     }
 
@@ -607,68 +680,22 @@ object OppoFaceHookEngine {
      *     q88 down to <=700KB) and write `files/oppo_faces/card_<md5>.jpg`, updating the map.
      * Returns null on any failure (caller keeps the original URL).
      */
+    /**
+     * Round-18: pure local replacement — the panel pushes rendered faces over the loopback bridge
+     * and the wallet stores them in `files/cardpersonality/faces/`; we only swap the URL argument
+     * with that local `file://` path (no provider, no Context, no network).
+     */
     private fun resolveReplacement(identity: CardIdentity, url: String): String? {
         return try {
-            ensureMapLoaded()
-            val resolved = ProviderClient.resolve(identity.type, identity.id)
-            val cached = urlToFile[url]
-            if (resolved == null) {
-                // Provider unavailable: only the wallet-side cache can serve.
-                if (cached != null) {
-                    val file = File(cached.file)
-                    if (file.isFile && file.length() > 0L) {
-                        bumpSource("file")
-                        return "file://" + file.absolutePath
-                    }
-                }
-                return null
-            }
-            if (cached != null && cached.fileKey == resolved.fileKey && cached.version == resolved.version) {
-                val file = File(cached.file)
-                if (file.isFile && file.length() > 0L) return "file://" + file.absolutePath
-            }
-            val ctx = ProviderClient.appContext() ?: return null
-            val bytes = readProviderBytes(resolved) ?: return null
-            val shrunk = shrink(bytes) ?: return null
-            val dir = File(ctx.filesDir, OPPO_FACES_DIR).apply { mkdirs() }
-            val fileName = "card_" + sha256Hex(resolved.fileKey + "@" + resolved.version).take(24) + ".jpg"
-            val target = File(dir, fileName)
-            val tmp = File(target.absolutePath + ".tmp")
-            tmp.writeBytes(shrunk)
-            if (!tmp.renameTo(target)) {
-                target.delete()
-                tmp.renameTo(target)
-            }
-            if (!target.isFile || target.length() <= 0L) return null
-            val old = urlToFile.put(url, MapEntry(target.absolutePath, resolved.fileKey, resolved.version))
-            if (old != null && old.file != target.absolutePath) {
-                try {
-                    File(old.file).delete()
-                } catch (_: Throwable) {
-                }
-            }
-            persistMap()
-            ProviderClient.logOp(
-                "oppo",
-                "file-replace",
-                "url=${maskUrl(url)} id=${identity.id} ${shrunk.size}B file=$fileName",
-            )
-            "file://" + target.absolutePath
+            val face = OppoBridge.resolveFace(identity) ?: return null
+            bumpSource("file")
+            OppoBridge.oplog("oppo", "file-replace", "url=${maskUrl(url)} id=${identity.id} file=${face.file.name}")
+            "file://" + face.file.absolutePath
         } catch (t: Throwable) {
-            ProviderClient.logOp("oppo", "file-replace-fail", t.javaClass.simpleName)
+            OppoBridge.oplog("oppo", "file-replace-fail", t.javaClass.simpleName)
             null
         }
     }
-
-    private fun readProviderBytes(face: ProviderClient.ResolvedFace): ByteArray? {
-        val ctx = ProviderClient.appContext() ?: return null
-        return try {
-            ctx.contentResolver.openInputStream(face.contentUri())?.use { it.readBytes() }
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
     /** Friend module constraint: source long side <=1600, JPEG q88 stepping down to <=700KB. */
     private fun shrink(bytes: ByteArray): ByteArray? {
         return try {
@@ -774,7 +801,7 @@ object OppoFaceHookEngine {
                 for (method in methods) {
                     val unhook = attemptHook("he:$className#loadBitmapSync") {
                         method.isAccessible = true
-                        XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                        HookBridge.hookMethod(method, object : MethodHook() {
                             override fun beforeHookedMethod(param: MethodHookParam?) {
                                 try {
                                     val url = param?.args?.getOrNull(1) as? String ?: return
@@ -805,7 +832,7 @@ object OppoFaceHookEngine {
                     if (stringIndex < 0) continue
                     val unhook = attemptHook("he2:$className#${method.name}") {
                         method.isAccessible = true
-                        XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                        HookBridge.hookMethod(method, object : MethodHook() {
                             override fun beforeHookedMethod(param: MethodHookParam?) {
                                 try {
                                     val url = param?.args?.getOrNull(stringIndex) as? String ?: return
@@ -827,11 +854,11 @@ object OppoFaceHookEngine {
 
     private fun customBitmap(url: String): Bitmap? {
         val identity = lookupIdentity(null, url) ?: return null
-        val resolved = ProviderClient.resolve(identity.type, identity.id) ?: return null
-        val key = resolved.fileKey + "@" + resolved.version
+        val face = OppoBridge.resolveFace(identity) ?: return null
+        val key = face.fileKey + "@" + face.version
         bitmapCache[key]?.let { if (!it.isRecycled) return it }
         return try {
-            val bytes = readProviderBytes(resolved) ?: return null
+            val bytes = face.file.readBytes()
             val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
             bitmapCache[key] = bitmap
             bitmap
@@ -900,7 +927,7 @@ object OppoFaceHookEngine {
             } catch (_: Throwable) {
             }
         }
-        ProviderClient.logOp("oppo", "refresh", "views=${entries.size}")
+        OppoBridge.oplog("oppo", "refresh", "views=${entries.size}")
     }
 
     private fun callWalletLoad(view: View, path: String): Boolean {
@@ -918,14 +945,19 @@ object OppoFaceHookEngine {
 
     // ================================================================ bookkeeping / diagnostics
 
-    private fun attemptHook(label: String, block: () -> XC_MethodHook.Unhook?): XC_MethodHook.Unhook? {
+    private fun attemptHook(label: String, block: () -> MethodHook.Unhook?): MethodHook.Unhook? {
         attemptedHooks.incrementAndGet()
         val unhook = try {
             hookLogged(label) { block() }
         } catch (_: Throwable) {
             null
         }
-        if (unhook != null) installedHooks.incrementAndGet() else recordMiss(label, null)
+        if (unhook != null) {
+            installedHooks.incrementAndGet()
+            installedLabels.add(label)
+        } else {
+            recordMiss(label, null)
+        }
         return unhook
     }
 
@@ -933,7 +965,7 @@ object OppoFaceHookEngine {
         if (missedTargets.size < 80) missedTargets.add(target)
         val detail = if (t != null) "$target (${t.javaClass.simpleName})" else target
         HLog.lim("oppo_miss", 50) { "OPPO target missing: $detail" }
-        ProviderClient.logOp("oppo", "hook-miss", detail)
+        OppoBridge.oplog("oppo", "hook-miss", detail)
     }
 
     private fun bumpSource(source: String) {
@@ -946,8 +978,18 @@ object OppoFaceHookEngine {
             "OPPO face replace $label: ${identity.fileKey} (n=$n)"
         }
         if (n <= MAX_URL_LOGS) {
-            ProviderClient.logOp("oppo", "face-applied", "${identity.id} via=$label")
+            OppoBridge.oplog("oppo", "face-applied", "${identity.id} via=$label")
         }
+    }
+
+    /** Round-22: filter the wallet's "添加卡/添加交通卡/..." placeholder entries. */
+    private fun isPlaceholderCard(identity: CardIdentity, faceUrl: String?, name: String): Boolean {
+        val id = identity.id.trim()
+        if (id.isEmpty() || id == "-1" || id == "0") return true
+        val label = name.ifBlank { identity.name }.trim()
+        if (label.contains("添加")) return true
+        if (faceUrl.isNullOrBlank() && label.length <= 2) return true
+        return false
     }
 
     fun engineStateJson(): String {
@@ -969,6 +1011,22 @@ object OppoFaceHookEngine {
                 .put("fileReplacements", fileReplacements.get())
                 .put("recordedModels", recordedModels.get())
                 .put("bridgeMode", "provider")
+                .put("observedModels", observedModels.get())
+                .put("reportedCards", reportedCards.get())
+                .put("sentCards", sentCardKeys.size)
+                .put("probesSource", "hooks")
+                .put("skippedNoIdentity", skippedNoIdentity.get())
+                .put("skipPlaceholder", skipPlaceholder.get())
+                .put("lastHookReportAt", lastHookReportAt)
+                .put("processName", processName)
+                .put("isMainProcess", isMainProcess)
+                .put("classLoaderName", classLoaderName)
+                .put("heartbeatSent", heartbeatSent)
+                .put("daoHooksInstalled", daoHooksInstalled)
+                .put("missedCount", missedTargets.size)
+                .put("classProbes", probeClasses(null))
+                .put("engineVersion", "r16")
+                .put("moduleVersion", MODULE_VERSION)
                 .put("faceSource", sources)
                 .put("missed", JSONArray(missedTargets.toList()))
                 .toString()
@@ -978,8 +1036,12 @@ object OppoFaceHookEngine {
     }
 
     private fun recordCard(identity: CardIdentity, faceUrl: String?, name: String = "", balance: String = "") {
+        if (isPlaceholderCard(identity, faceUrl, name)) {
+            skipPlaceholder.incrementAndGet()
+            return
+        }
         if (pairCount.get() == 0L) pairCount.incrementAndGet()
-        val key = "oppo|${identity.fileKey}"
+        val key = Wallets.configKey(walletPackage, identity.fileKey)
         try {
             val o = JSONObject()
                 .put("type", identity.type)
@@ -994,7 +1056,7 @@ object OppoFaceHookEngine {
             if (balance.isNotBlank()) o.put("balance", balance)
             if (faceUrl != null) o.put("faceUrl", faceUrl) else o.put("faceUrl", JSONObject.NULL)
             detected[key] = o
-            ProviderClient.engineStateProvider = { engineStateJson() }
+            // Round-18: engine state is sent over the loopback bridge (HELLO), not the provider.
             reportIfDue()
         } catch (_: Throwable) {
         }
@@ -1007,10 +1069,167 @@ object OppoFaceHookEngine {
         if (!lastReportAt.compareAndSet(last, now)) return
         if (detected.isEmpty()) return
         try {
+            sendAllDetected()
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Sends the complete detected snapshot and tracks which keys were actually emitted. */
+    private fun sendAllDetected() {
+        val arr = JSONArray()
+        for (o in detected.values) arr.put(o)
+        OppoBridge.sendCards(arr.toString())
+        sentCardKeys.addAll(detected.keys)
+        reportedCards.set(sentCardKeys.size.toLong())
+        lastHookReportAt = System.currentTimeMillis()
+        sendHeartbeat("hook-report")
+    }
+
+    /** Round-19: bridge (re)connected / panel asked — reset the throttle and push everything now. */
+    fun forceReportNow() {
+        try {
+            lastReportAt.set(0L)
+            sendAllDetected()
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Round-19: full detected-card snapshot for the bridge REQ_CARDS pull protocol. */
+    fun cardsJson(): String {
+        return try {
             val arr = JSONArray()
             for (o in detected.values) arr.put(o)
-            ProviderClient.reportAsync(arr.toString())
+            arr.toString()
         } catch (_: Throwable) {
+            "[]"
+        }
+    }
+
+    // ================================================================ heartbeat / DAO fallback
+
+    /**
+     * Round-18 reliable heartbeat over the loopback bridge: no Context, no provider; the panel
+     * records it per process (HELLO) so injection state and class probes are visible in the UI.
+     */
+    private fun installApplicationHook(cl: ClassLoader) {
+        // Round-18: no Application#onCreate hook needed — the bridge has no Context dependency.
+    }
+
+    private fun sendHeartbeat(reason: String) {
+        try {
+            OppoBridge.sendHello(reason)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * Round-19: classProbes are derived from the hooks that were actually installed, not from
+     * Class.forName at heartbeat time (wallet class loaders/reference paths made raw probes false
+     * even though the hooks were live). `probesSource:"hooks"` tells the panel the semantics.
+     */
+    private fun probeClasses(cl: ClassLoader?): String {
+        val probes = JSONObject()
+        probes.put("CircleNetworkImageView", installedLabels.any { it.startsWith("cniv:") })
+        probes.put("NfcCard", installedLabels.any { it.startsWith("model:") })
+        probes.put("NfcCardRoomDao_Impl", daoHooksInstalled || installedLabels.any { it.startsWith("dao:") })
+        probes.put("FinBigCardFaceView", installedLabels.any { it.startsWith("container:") })
+        probes.put("CardCoverSettingUtil", installedLabels.any { it.startsWith("he:") || it.startsWith("he2:") })
+        probes.put("probesSource", "hooks")
+        return probes.toString()
+    }
+    /** Round-18: periodic HELLO over the bridge (also proves injection per process). */
+    private fun startHeartbeatLoop() {
+        try {
+            mainHandler.postDelayed(object : Runnable {
+                override fun run() {
+                    try {
+                        sendHeartbeat("periodic")
+                    } catch (_: Throwable) {
+                    }
+                    try {
+                        mainHandler.postDelayed(this, 15_000L)
+                    } catch (_: Throwable) {
+                    }
+                }
+            }, 15_000L)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * DAO enumeration fallback: Room `*_Impl` DAO classes return the full card list (0-arg methods
+     * returning List) even when no UI ever calls the model getters — hooking them makes card
+     * reporting independent of the card-face screens being visited.
+     */
+    private fun hookDaoQueries(cl: ClassLoader, phase: String) {
+        if (daoHooksInstalled && phase == "install") return
+        val candidates = listOf(
+            "com.nearme.wallet.db.NfcCardRoomDao_Impl",
+            "com.nearme.wallet.db.NfcCardDao_Impl",
+            "com.nearme.wallet.db.NfcCardDetailDao_Impl",
+            "com.nearme.wallet.db.NfcCardDetailRoomDao_Impl",
+            "com.nearme.wallet.db.CardDao_Impl",
+        )
+        var installedAny = false
+        for (className in candidates) {
+            try {
+                val cls = Class.forName(className, false, cl)
+                val methods = cls.declaredMethods.filter { m ->
+                    m.parameterCount == 0 && java.util.List::class.java.isAssignableFrom(m.returnType)
+                }
+                for (method in methods) {
+                    val label = "dao:${className.substringAfterLast('.')}#${method.name}"
+                    if (hitLogged[label]?.get() == true) continue
+                    val unhook = attemptHook(label) {
+                        method.isAccessible = true
+                        HookBridge.hookMethod(
+                            method,
+                            safeAfter("OPPO-dao-$className-${method.name}") { param ->
+                                try {
+                                    val list = param.getResult() as? List<*> ?: return@safeAfter
+                                    recordDaoCards(list)
+                                } catch (_: Throwable) {
+                                }
+                            },
+                        )
+                    }
+                    if (unhook != null) {
+                        handles.add(unhook)
+                        installedAny = true
+                        hitLogged[label] = AtomicBoolean(false)
+                    }
+                }
+            } catch (t: Throwable) {
+                if (phase == "install") recordMiss("dao:$className", t)
+            }
+        }
+        daoHooksInstalled = daoHooksInstalled || installedAny
+        if (installedAny) {
+            OppoBridge.oplog("oppo", "dao-hooks", "phase=$phase installed=true")
+        } else if (phase != "install") {
+            OppoBridge.oplog("oppo", "dao-hooks", "phase=$phase installed=false")
+        }
+    }
+
+    /** Records every card from a DAO List result (no UI dependency). */
+    private fun recordDaoCards(list: List<*>) {
+        for (item in list) {
+            item ?: continue
+            try {
+                val className = item.javaClass.name
+                val url = FACE_URL_GETTERS_FOR_DAO.firstNotNullOfOrNull { g -> firstGetter(item, g) }
+                val identity = identityOf(item, className)
+                if (identity == null) {
+                    skippedNoIdentity.incrementAndGet()
+                    if (url == null) continue
+                }
+                val finalIdentity = identity ?: fallbackIdentity(url ?: "dao:$className", className, "dao")
+                if (url != null) aliasUrl(url, finalIdentity)
+                val meta = url?.let { urlMeta[it] } ?: metaOf(item, className)
+                recordCard(finalIdentity, sanitizedFaceUrl(url), meta.name, meta.balance)
+                if (url != null) handleFaceSource(finalIdentity, url) else bumpSource("none")
+            } catch (_: Throwable) {
+            }
         }
     }
 
