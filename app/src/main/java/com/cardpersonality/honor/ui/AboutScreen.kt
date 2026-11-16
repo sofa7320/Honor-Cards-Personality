@@ -375,12 +375,57 @@ private fun rememberLauncherIconBitmap(ctx: Context): ImageBitmap? {
                 android.graphics.Bitmap.Config.ARGB_8888,
             )
             val canvas = android.graphics.Canvas(bitmap)
-            drawable.setBounds(0, 0, size, size)
-            drawable.draw(canvas)
+            if (drawable is android.graphics.drawable.AdaptiveIconDrawable) {
+                // Desktop launchers draw the adaptive background + foreground layers and clip them
+                // with the icon mask. Doing the same here keeps the About icon identical to the
+                // launcher icon (drawing only foreground would lose the blue plate + mask).
+                drawable.setBounds(0, 0, size, size)
+                // AdaptiveIconDrawable exposes the system mask as a Path (API 33+); clip the two
+                // layers with it so the About icon matches the launcher (blue plate + mask).
+                val maskPath: android.graphics.Path? = if (
+                    android.os.Build.VERSION.SDK_INT >= 33
+                ) {
+                    runCatching { drawable.iconMask }.getOrNull()
+                } else {
+                    null
+                }
+                canvas.save()
+                if (maskPath != null && !maskPath.isEmpty) {
+                    val bounds = android.graphics.RectF()
+                    maskPath.computeBounds(bounds, true)
+                    if (bounds.width() > 0f && bounds.height() > 0f) {
+                        // Normalize the mask Path (not the canvas) into 0..size so the layer
+                        // bounds (0..size) stay aligned with the clip.
+                        val scaleX = size / bounds.width()
+                        val scaleY = size / bounds.height()
+                        val matrix = android.graphics.Matrix()
+                        matrix.setScale(scaleX, scaleY)
+                        matrix.postTranslate(-bounds.left * scaleX, -bounds.top * scaleY)
+                        maskPath.transform(matrix)
+                    }
+                    canvas.clipPath(maskPath)
+                }
+                drawable.background?.let { layer ->
+                    layer.setBounds(0, 0, size, size)
+                    layer.draw(canvas)
+                }
+                drawable.foreground?.let { layer ->
+                    layer.setBounds(0, 0, size, size)
+                    layer.draw(canvas)
+                }
+                canvas.restore()
+            } else {
+                drawable.setBounds(0, 0, size, size)
+                drawable.draw(canvas)
+            }
             bitmap.asImageBitmap()
         }.getOrNull()
     }
 }
+
+
+
+
 
 
 
