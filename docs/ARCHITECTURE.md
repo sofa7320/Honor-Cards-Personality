@@ -180,10 +180,15 @@ re-enter hooked getters.
     file argument strategy), card-report robustness with `url:<sha24>` identity fallback, OPPO
     engine diagnostics (`engine_state` provider call / `oppo_engine.json` / OpLog entries),
     `fetchBrightnessUnderTextView*` brightness hook. PR-only round (no tag/Release, no main merge).
+  - `0.2.9` — round 13: OPPO read pipeline — L0 pairing hooks (view↔NfcCard), original-face capture
+    for OPPO (FaceCapture + in-process local-file reads), cardType mapping (12/7/99/33 merges),
+    round-corner-safe replacement via local file path (no direct setImageBitmap), CNIV signature
+    fixes, config prewarm, URL normalization + dual identity tables, pair/capture/source
+    diagnostics. Stacked PR (feat/round13 ← feat/round12), no tag/Release.
 - Release APKs are frozen as `work/module/poc/card-personality-v<N>-final.apk`; the current
-  build is `v37-final` (versionName 0.2.8 / versionCode 1), verified with
-  `aapt2 dump badging` (`versionCode='1' versionName='0.2.8'`). The lead owns tagging/releases;
-  round 12 is PR-only (feat/round12, no tag, no Release, no main merge).
+  build is `v39-final` (versionName 0.2.9 / versionCode 1), verified with
+  `aapt2 dump badging` (`versionCode='1' versionName='0.2.9'`). The lead owns tagging/releases;
+  rounds 12/13 are stacked PR-only (feat/round13 ← feat/round12, no tag, no Release, no main merge).
 
 Round-4 model additions (owned by ui-dev; JSON is backward-compatible: every new field has a
 default, and the hook layer never parses sticker/config geometry — it only uses `version` and
@@ -499,3 +504,64 @@ modules) finds nothing; hooks must be explicit by method name + parameters.
   custom card (H-E `loadBitmapSync` retained).
 - Still out of scope (fail-open): OPPO EID (`OCSComponentProviderImpl#w6`), desktop Seedling
   RemoteViews widgets, direct-Bitmap faces; no OPPO device is used for validation (static only).
+## 17. Round-13: OPPO read pipeline (0.2.9)
+
+Root causes from `work/re/oppo` research: the OPPO engine never captured an original face, the panel
+downloads only http(s) while OPPO faces are often local absolute paths, identity depended on URL
+strings, `typeForClass` collapsed everything to transit, three CNIV signatures were wrong, direct
+`setImageBitmap` broke the wallet's baked rounded corners, and the config snapshot was not prewarmed.
+
+### 17.1 L0 pairing (view ↔ NfcCard) — the key for "panel sees cards"
+`OppoFaceHookEngine` hooks (after, fail-open) the places where the wallet hands the card object to a
+view and records `viewToIdentity: WeakHashMap<View, CardIdentity>` (overwritten on every bind, so
+RecyclerView reuse is handled) plus `urlToIdentity` aliases:
+- `com.finshell.quickcardpkg.view.QuickCardNfcCardView#h(NfcCard,boolean)` /
+  `#setNfcCardData(NfcCard)` (face view via id `nfc_consume_card_img`);
+- `com.nearme.pay.business.consume.cardframe.e#bindData(NfcCard,int)` (reflected field `mCardImage`);
+- `com.nearme.pay.dragonfly.widget.DragonflyConsumeCardsFrameController#T(CircleNetworkImageView,NfcCard)` /
+  `#N(View,NfcCard)`;
+- `com.nearme.pay.utils.b0.a#d(Context,NfcCard,String,String)` (card reported, no view);
+- `com.finshell.finui.widget.atomic.card.FinUINfcCardFaceView#showCardImg(…,4 args)` (reflected field
+  `mThemeImg`, identity via URL table).
+Every pairing immediately `recordCard()`s (panel card list/refresh) and then either replaces the
+face or schedules/captures the original snapshot. Identity fields: `aid → appCode → bizId →
+cardNo → cardId/id` + `displayName`.
+
+### 17.2 Card-type mapping (FIX-2)
+`typeOfNfcCard()` uses `NfcCard.getCardType()` (and `getSubCardType()/getTrafficTag()` for
+`NfcCardDetail`): 5=transit; 6/10=access; 9/15=carkey; 1/2/8=bank; 12=bank (DCEP); 14=campus;
+21=ebike; 7=bank (eID); 99=transit (super card); 33=transit (third-party code); unknown → not
+reported. All mapped values are inside `FaceCapture.TYPE_WHITELIST` (transit/bank/access/campus/
+carkey/ebike), so snapshots are never silently dropped.
+
+### 17.3 Original-face capture (L1, three channels)
+1. **Local files (B 型, R3)** — hook runs as the wallet uid: normalise the face URL (strip
+   `file://`, query, URL-decode), `File` read, decode/validate (≤3MB, long side ≤2560), then
+   `saveOriginalFace(type,id,jpeg)`. Only local path/file:// — http(s) is left to the panel
+   downloader; the reported `faceUrl` is `null` for local faces (nothing to download).
+2. **view.drawable (C/D 型, R2)** — when the card has no custom config, `FaceCapture.schedule(view,
+   identity)` snapshots the already-drawn face (idempotent via `faceSnapshotNeeded`).
+3. **Panel download (A 型, R4)** — http(s) `faceUrl` is still reported for the existing panel
+   downloader.
+`engine_state.faceSource` counts which channel produced the face (`url/file/bitmap/none`);
+`pairCount`/`captureCount` show whether L0/L1 are working.
+
+### 17.4 Replacement without breaking rounded corners (FIX-3)
+Matched card ⇒ the String URL argument is replaced with a **local JPEG path in the wallet cache dir**
+(`cache/cardpersonality_oppo_faces/<sha>_v<n>.jpg`), letting the wallet's own Glide reload it
+(rounded-corner transform, scale, cache all preserved). Only when a view has no wallet loader is a
+bitmap set directly, and then with 14dp round corners baked in. CNIV signatures corrected: `g1=4`,
+`h1=2`, `j1=2`, plus `setSvgUrl=1`, `r1=3` (A0/y0/x0/F0 kept). URL tables store both the original
+string and its normalised form so theme/URL changes still match.
+
+### 17.5 Other fixes
+- `install()` ends with a background `ProviderClient.config(force = true)` prewarm (FIX-4), so the
+  first bind after cold start usually resolves a custom face.
+- `engine_state` (`engine_state` provider call / `getReport` extra / `files/oppo_engine.json`) now
+  also carries `pairCount`, `captureCount`, `faceSource{url,file,bitmap,none}` alongside
+  `installedCount/attemptedCount/observedUrls/cardCount/replaceCount/missed[]`.
+- OpLog adds `oppo|pair`, `oppo|capture-scheduled`, `oppo|local-file-captured`,
+  `oppo|local-file-fail`, `oppo|config-prewarmed`, `oppo|l0-installed`, `oppo|l0-method`,
+  `oppo|ha-method`, `oppo|hb-method`, `oppo|hook-miss`.
+- Honor engine (`FaceHookEngine`) unchanged; all OPPO additions are main-process-only and fail-open.
+  No OPPO device is used for validation (static only).
