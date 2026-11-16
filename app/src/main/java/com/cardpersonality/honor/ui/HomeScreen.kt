@@ -2,6 +2,7 @@ package com.cardpersonality.honor.ui
 
 import android.content.Context
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -80,6 +81,7 @@ import java.util.Locale
 fun HomeScreen(
     ctx: Context,
     onOpenEditor: (EditorTarget) -> Unit,
+    onOpenAbout: () -> Unit = {},
 ) {
     var cards by remember { mutableStateOf<List<CardInfo>>(emptyList()) }
     var reloadKey by remember { mutableIntStateOf(0) }
@@ -87,6 +89,15 @@ fun HomeScreen(
     var loading by remember { mutableStateOf(true) }
     var moduleConnected by remember { mutableStateOf<Boolean?>(null) }
     var storeVersion by remember { mutableIntStateOf(0) }
+    var detectedWallets by remember { mutableStateOf<List<WalletPackages.InstalledWallet>>(emptyList()) }
+    var walletSnapshot by remember { mutableStateOf<WalletsSnapshot?>(null) }
+    val walletPackagesText = remember(detectedWallets, walletSnapshot) {
+        val installed = walletSnapshot?.installedPackages?.takeIf { it.isNotEmpty() }
+            ?: detectedWallets.map { it.packageName }
+        installed.joinToString(" / ").ifEmpty { "未检测到已安装的受支持钱包" }
+    }
+    val activeWalletPackage = walletSnapshot?.activeWalletPackage
+        ?: detectedWallets.singleOrNull()?.packageName
 
     // Refresh the card report whenever the panel comes back to the foreground (e.g. after
     // the user opened the wallet once so the hook could report detected cards).
@@ -101,10 +112,14 @@ fun HomeScreen(
 
     LaunchedEffect(reloadKey) {
         loading = true
-        withContext(Dispatchers.IO) {
-            cards = FaceRepository.cards(ctx)
-            reportUpdatedAt = FaceRepository.reportUpdatedAt(ctx)
-            storeVersion = FaceRepository.storeVersion(ctx)
+        val loadResult = runCatching {
+            withContext(Dispatchers.IO) {
+                cards = FaceRepository.cards(ctx)
+                reportUpdatedAt = FaceRepository.reportUpdatedAt(ctx)
+                storeVersion = FaceRepository.storeVersion(ctx)
+                detectedWallets = WalletPackages.installed(ctx)
+                walletSnapshot = WalletProbe.query(ctx)
+            }
         }
         moduleConnected = withContext(Dispatchers.IO) {
             runCatching {
@@ -117,6 +132,28 @@ fun HomeScreen(
             }.getOrDefault(false)
         }
         loading = false
+        loadResult.exceptionOrNull()?.let { t ->
+            Toast.makeText(
+                ctx,
+                "刷新失败：" + (t.message?.take(80) ?: t.javaClass.simpleName),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    // Watch the stored config version so a face change made elsewhere (editor save, hook write)
+    // refreshes the list + thumbnails automatically instead of waiting for an app restart.
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(1500)
+            val version = withContext(Dispatchers.IO) {
+                runCatching { FaceRepository.storeVersion(ctx) }.getOrDefault(storeVersion)
+            }
+            if (version != storeVersion) {
+                storeVersion = version
+                reloadKey++
+            }
+        }
     }
 
     Scaffold(
@@ -125,8 +162,12 @@ fun HomeScreen(
                 title = stringResource(R.string.app_name),
                 subtitle = "荣耀钱包 · 自定义卡面",
                 actions = {
-                    IconButton(onClick = { reloadKey++ }) {
-                        Icon(MiuixIcons.Refresh, contentDescription = "刷新")
+                    IconButton(onClick = { if (!loading) reloadKey++ }) {
+                        if (loading) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                        } else {
+                            Icon(MiuixIcons.Refresh, contentDescription = "刷新")
+                        }
                     }
                 },
             )
@@ -139,7 +180,7 @@ fun HomeScreen(
                 bottom = innerPadding.calculateBottomPadding() + 32.dp,
             ),
         ) {
-            item { StatusCard(moduleConnected, reportUpdatedAt, cards.size, BuildConfig.VERSION_NAME) }
+            item { StatusCard(moduleConnected, reportUpdatedAt, cards.size, walletPackagesText, BuildConfig.VERSION_NAME) }
 
             val grouped = cards.groupBy { it.type }
             if (cards.isEmpty()) {
@@ -148,7 +189,8 @@ fun HomeScreen(
                         loading = loading,
                         reportUpdatedAt = reportUpdatedAt,
                         cardCount = cards.size,
-                        onRefresh = { reloadKey++ },
+                        walletPackagesText = walletPackagesText,
+                        onRefresh = { if (!loading) reloadKey++ },
                         onOpenSample = {
                             onOpenEditor(
                                 EditorTarget(
@@ -167,7 +209,7 @@ fun HomeScreen(
                     if (list.isNotEmpty()) {
                         item { SmallTitle(CardTypes.displayName(type)) }
                         items(list, key = { it.key.fileKey }) { card ->
-                            DetectedCardRow(ctx, card, reloadKey, onOpenEditor)
+                            DetectedCardRow(ctx, card, reloadKey, activeWalletPackage, onOpenEditor)
                         }
                     }
                 }
@@ -175,7 +217,7 @@ fun HomeScreen(
                 otherTypes.forEach { type ->
                     item { SmallTitle(CardTypes.displayName(type)) }
                     items(grouped[type].orEmpty(), key = { it.key.fileKey }) { card ->
-                        DetectedCardRow(ctx, card, reloadKey, onOpenEditor)
+                        DetectedCardRow(ctx, card, reloadKey, activeWalletPackage, onOpenEditor)
                     }
                 }
             }
@@ -190,16 +232,55 @@ fun HomeScreen(
                 )
             }
             items(CardTypes.ALL, key = { "type_$it" }) { type ->
-                TypeDefaultRow(ctx, type, reloadKey, onOpenEditor)
+                TypeDefaultRow(ctx, type, reloadKey, activeWalletPackage, onOpenEditor)
             }
 
             item {
                 Text(
-                    text = "提示：设置完成后重新打开荣耀钱包即可看到新的卡面。卡面仅保存在本机，不上传。",
+                    text = "提示：设置完成后重新打开钱包即可看到新的卡面。卡面仅保存在本机，不上传。",
                     style = MiuixTheme.textStyles.footnote1,
                     color = MiuixTheme.colorScheme.onBackgroundVariant,
                     modifier = Modifier.padding(horizontal = 22.dp, vertical = 18.dp),
                 )
+            }
+
+            item { SmallTitle("其他") }
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    onClick = onOpenAbout,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            MiuixIcons.Info,
+                            contentDescription = null,
+                            tint = MiuixTheme.colorScheme.onBackgroundVariant,
+                            modifier = Modifier.size(22.dp),
+                        )
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("关于", style = MiuixTheme.textStyles.body1)
+                            Text(
+                                text = "应用信息 · 支持的钱包版本 · 开源致谢",
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onBackgroundVariant,
+                            )
+                        }
+                        Icon(
+                            MiuixIcons.ChevronForward,
+                            contentDescription = null,
+                            tint = MiuixTheme.colorScheme.onBackgroundVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
             }
         }
     }
@@ -211,6 +292,7 @@ private fun StatusCard(
     moduleConnected: Boolean?,
     reportUpdatedAt: Long,
     cardCount: Int,
+    walletPackagesText: String,
     versionName: String,
 ) {
     val hookReported = reportUpdatedAt > 0L
@@ -227,17 +309,8 @@ private fun StatusCard(
         hookReported -> "模块已连接，未识别到卡片"
         else -> "等待卡片上报"
     }
-    val summary = when {
-        moduleConnected == false -> "本机应用内配置服务异常，请重新打开应用"
-        moduleConnected == null -> ""
-        hookReported -> buildString {
-            append("卡片上报：")
-            append(formatTime(reportUpdatedAt))
-            append(" · ")
-            append(if (cardCount > 0) "$cardCount 张卡片" else "0 张卡片（打开钱包卡片页后再刷新）")
-        }
-        else -> "请确认 LSPosed 已启用本模块，并打开一次荣耀钱包"
-    }
+    // Item 2: the small status line is now just the detected wallet package name(s).
+    val summary = "识别钱包包名：$walletPackagesText"
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -286,6 +359,7 @@ private fun DetectedCardRow(
     ctx: Context,
     card: CardInfo,
     refreshToken: Int,
+    walletPackage: String?,
     onOpenEditor: (EditorTarget) -> Unit,
 ) {
     val cfg = remember(card.key.fileKey, refreshToken) {
@@ -303,6 +377,7 @@ private fun DetectedCardRow(
                     title = displayName,
                     subtitle = card.subtitle.ifBlank { CardTypes.displayName(card.type) },
                     appElementIds = card.appElementIds,
+                    walletPackage = walletPackage,
                 ),
             )
         },
@@ -357,6 +432,7 @@ private fun TypeDefaultRow(
     ctx: Context,
     type: String,
     refreshToken: Int,
+    walletPackage: String?,
     onOpenEditor: (EditorTarget) -> Unit,
 ) {
     val key = remember(type) { CardKey.typeDefault(type) }
@@ -374,6 +450,7 @@ private fun TypeDefaultRow(
                     key = key,
                     title = displayName + " · 默认卡面",
                     subtitle = "对该类型下所有未单独设置的卡片生效",
+                    walletPackage = walletPackage,
                 ),
             )
         },
@@ -436,7 +513,12 @@ private fun CardFaceRowThumbnail(
             } else {
                 FaceRepository.ensureOriginalFace(ctx, card)
             }
-            file?.let { FaceImageLoader.load(it.absolutePath, 640)?.asImageBitmap() }
+            file?.let { file ->
+                // Cache key must follow the card key + config version: evict the old decode so a
+                // freshly regenerated export/original snapshot is re-read (no app restart).
+                FaceImageLoader.evict(file.absolutePath)
+                FaceImageLoader.load(file.absolutePath, 640)?.asImageBitmap()
+            }
         }
     }
     val image = bitmap
@@ -489,7 +571,10 @@ private fun TypeDefaultThumbnail(
                 null
             } else {
                 FaceRepository.exportFileFor(ctx, type, CardKey.TYPE_DEFAULT_ID)
-                    ?.let { FaceImageLoader.load(it.absolutePath, 400)?.asImageBitmap() }
+                    ?.let { file ->
+                        FaceImageLoader.evict(file.absolutePath)
+                        FaceImageLoader.load(file.absolutePath, 400)?.asImageBitmap()
+                    }
             }
         }
     }
@@ -541,6 +626,7 @@ private fun EmptyState(
     loading: Boolean,
     reportUpdatedAt: Long,
     cardCount: Int,
+    walletPackagesText: String,
     onRefresh: () -> Unit,
     onOpenSample: () -> Unit,
 ) {
@@ -569,11 +655,7 @@ private fun EmptyState(
                 color = MiuixTheme.colorScheme.onBackgroundVariant,
             )
             Text(
-                text = if (reportUpdatedAt > 0L) {
-                    "诊断：最近上报 " + formatTime(reportUpdatedAt) + " · 解析到 $cardCount 张卡片"
-                } else {
-                    "诊断：尚未收到模块的卡片上报"
-                },
+                text = "识别钱包包名：$walletPackagesText",
                 style = MiuixTheme.textStyles.footnote2,
                 color = MiuixTheme.colorScheme.onBackgroundVariant,
             )
@@ -600,3 +682,6 @@ private fun formatTime(millis: Long): String {
         ""
     }
 }
+
+
+

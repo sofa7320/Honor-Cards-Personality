@@ -76,7 +76,8 @@ fun CardFacePreview(
     modifier: Modifier = Modifier,
     selectedStickerIdState: State<String?> = rememberUpdatedState(null),
     interactive: Boolean = true,
-    cornerRadius: Dp = 12.dp,
+    walletPackage: String? = null,
+    cornerRadius: Dp? = null,
     /**
      * Wallet's current (unmodified) face snapshot shown as a dimmed backdrop while the user has
      * not picked a custom image yet. Purely visual; never part of the exported bitmap.
@@ -87,6 +88,8 @@ fun CardFacePreview(
     onCfgChange: (CardFaceConfig) -> Unit = {},
     onStickerSelected: (String?) -> Unit = {},
 ) {
+    val faceSpec = FaceGeometry.specFor(walletPackage)
+    val radius: Dp = cornerRadius ?: faceSpec.cornerRadiusDp.dp
     val image = rememberFaceImageBitmap(cfg.imagePath)
     val backgroundImage = rememberFaceImageBitmap(backgroundImagePath)
     val stickerBitmaps = rememberStickerBitmaps(cfg.stickers)
@@ -114,7 +117,7 @@ fun CardFacePreview(
     val latestOnSelect by rememberUpdatedState(onStickerSelected)
 
     val stickerBoxes: Map<String, Rect> = remember(
-        cfg.stickers, sizePx, stickerBitmaps, density.density, density.fontScale,
+        cfg.stickers, sizePx, stickerBitmaps, density.density, density.fontScale, faceSpec,
     ) {
         if (sizePx.width <= 0) {
             emptyMap()
@@ -127,6 +130,7 @@ fun CardFacePreview(
                 textMeasurer,
                 density.density,
                 density.fontScale,
+                faceSpec.designWidth,
             )
         }
     }
@@ -134,7 +138,7 @@ fun CardFacePreview(
 
     // Content size (canvas px, no selection padding) per sticker, for snapping calculations.
     val stickerSizes: Map<String, Pair<Float, Float>> = remember(
-        cfg.stickers, sizePx, stickerBitmaps, density.density, density.fontScale,
+        cfg.stickers, sizePx, stickerBitmaps, density.density, density.fontScale, faceSpec,
     ) {
         if (sizePx.width <= 0) {
             emptyMap()
@@ -148,6 +152,7 @@ fun CardFacePreview(
                     textMeasurer,
                     density.density,
                     density.fontScale,
+                    faceSpec.designWidth,
                 )
             }
         }
@@ -446,9 +451,9 @@ fun CardFacePreview(
 
     Box(
         modifier = modifier
-            .aspectRatio(FaceGeometry.ASPECT)
-            .shadow(elevation = 16.dp, shape = RoundedCornerShape(cornerRadius), clip = false)
-            .clip(RoundedCornerShape(cornerRadius))
+            .aspectRatio(faceSpec.aspect)
+            .shadow(elevation = 16.dp, shape = RoundedCornerShape(radius), clip = false)
+            .clip(RoundedCornerShape(radius))
             .background(Color(0xFF16181D))
             .onSizeChanged { sizePx = it },
     ) {
@@ -505,7 +510,7 @@ fun CardFacePreview(
                 }
                 drawRect(color = Color(0x33000000))
             }
-            val designScale = size.width / FaceGeometry.DESIGN_WIDTH
+            val designScale = size.width / faceSpec.designWidth
             // List index 0 is the TOP-most layer -> draw in reverse so 0 lands on top.
             for (spec in cfg.stickers.asReversed()) {
                 if (!spec.visible) continue
@@ -693,8 +698,9 @@ private fun stickerTextStyle(
     canvasWidth: Float,
     densityValue: Float,
     fontScale: Float,
+    designWidth: Float,
 ): TextStyle {
-    val fontSizePx = spec.sizeDp.coerceIn(4f, 400f) * (canvasWidth / FaceGeometry.DESIGN_WIDTH)
+    val fontSizePx = spec.sizeDp.coerceIn(4f, 400f) * (canvasWidth / designWidth)
     val fontSizeSp = fontSizePx / (densityValue * fontScale).coerceAtLeast(0.01f)
     val typeface = FaceTypefaces.resolve(
         customFontPath = spec.customFontPath,
@@ -717,10 +723,11 @@ private fun measureStickerText(
     canvasWidth: Float,
     densityValue: Float,
     fontScale: Float,
+    designWidth: Float,
 ): TextLayoutResult {
     return textMeasurer.measure(
         text = AnnotatedString(spec.text),
-        style = stickerTextStyle(spec, canvasWidth, densityValue, fontScale),
+        style = stickerTextStyle(spec, canvasWidth, densityValue, fontScale, designWidth),
     )
 }
 
@@ -732,6 +739,7 @@ private fun stickerContentSize(
     textMeasurer: TextMeasurer,
     densityValue: Float,
     fontScale: Float,
+    designWidth: Float,
 ): Pair<Float, Float> {
     return when (spec.kind) {
         StickerKind.IMAGE -> {
@@ -748,7 +756,7 @@ private fun stickerContentSize(
             if (spec.text.isBlank()) {
                 0f to 0f
             } else {
-                val layout = measureStickerText(spec, textMeasurer, canvasWidth, densityValue, fontScale)
+                val layout = measureStickerText(spec, textMeasurer, canvasWidth, densityValue, fontScale, designWidth)
                 layout.size.width.toFloat() to layout.size.height.toFloat()
             }
         }
@@ -763,6 +771,7 @@ private fun buildStickerBoxes(
     textMeasurer: TextMeasurer,
     densityValue: Float,
     fontScale: Float,
+    designWidth: Float,
 ): Map<String, Rect> {
     // LinkedHashMap preserves sticker-list order: index 0 = TOP-most layer.
     val out = LinkedHashMap<String, Rect>(stickers.size)
@@ -771,7 +780,7 @@ private fun buildStickerBoxes(
         val centerX = spec.cx * canvasWidth
         val centerY = spec.cy * canvasHeight
         val (w, h) = stickerContentSize(
-            spec, canvasWidth, canvasHeight, bitmaps, textMeasurer, densityValue, fontScale,
+            spec, canvasWidth, canvasHeight, bitmaps, textMeasurer, densityValue, fontScale, designWidth,
         )
         val pad = 6f
         out[spec.id] = Rect(
@@ -829,22 +838,28 @@ fun CardFaceThumbnail(
     cfg: CardFaceConfig,
     modifier: Modifier = Modifier,
     cornerRadius: Dp = 8.dp,
+    walletPackage: String? = null,
 ) {
     CardFacePreview(
         cfg = cfg,
         modifier = modifier,
         interactive = false,
+        walletPackage = walletPackage,
         cornerRadius = cornerRadius,
     )
 }
 
 /** Placeholder used when a card has no custom face yet. */
 @Composable
-fun EmptyFacePlaceholder(modifier: Modifier = Modifier) {
+fun EmptyFacePlaceholder(
+    modifier: Modifier = Modifier,
+    walletPackage: String? = null,
+) {
+    val spec = FaceGeometry.specFor(walletPackage)
     Box(
         modifier = modifier
-            .aspectRatio(FaceGeometry.ASPECT)
-            .clip(RoundedCornerShape(12.dp))
+            .aspectRatio(spec.aspect)
+            .clip(RoundedCornerShape(spec.cornerRadiusDp.dp))
             .background(
                 Brush.linearGradient(
                     listOf(Color(0xFF343A46), Color(0xFF1C1F26)),
@@ -852,6 +867,7 @@ fun EmptyFacePlaceholder(modifier: Modifier = Modifier) {
             ),
     )
 }
+
 
 
 

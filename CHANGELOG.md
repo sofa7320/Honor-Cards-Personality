@@ -7,6 +7,22 @@
 
 （暂无）
 
+## [0.2.6] - 2026-11-16
+
+> 本轮按要求**不发布 GitHub Release**（仅源码/构建）。
+
+### 新增
+- **多钱包支持**：荣耀钱包（`com.hihonor.wallet`）+ OPPO/欧加钱包（`com.finshell.wallet` 5.52.0）。配置 key 增加钱包维度（`<包名>|<类型>:<身份>`，旧配置按荣耀兼容）；provider 新增 `wallets` 钱包检测接口。
+- **OPPO 卡面适配（静态逆向，无实机验证）**：`CircleNetworkImageView` 的 6 个 String 加载方法为主替换点，`Fin*` 卡面控件作为离线补图/刷新辅助，`CardCoverSettingUtil#loadBitmapSync` 保证文字黑白色按自定义卡面计算；overlay 默认 KEEP，功能控件永不隐藏；EID/桌面小组件不覆盖（fail-open）。
+- **按钱包区分卡面几何**：荣耀 336:208/圆角 12dp；OPPO 328:202/圆角 14dp（预览/导出/说明文字自动切换）。
+- **关于页**：Miuix 关于页（图标/名称/版本、支持钱包与版本行、GitHub 仓库、发送错误报告、致谢/隐私）。
+- **首页「识别钱包包名：com.xxx」**：替换原「卡片上报…」行。
+
+### 修复
+- 首页右上角刷新按钮真正生效（loading 态 + 重拉上报/缩略图，失败 Toast）。
+- 门禁卡更换卡面后首页缩略图不更新：config version watcher + 缩略图缓存键 + 位图缓存 evict，返回首页即更新，无需重启。
+- 组件 tab 按钱包包名显示对应元素开关（荣耀设备不再出现无关钱包组件）。
+
 ## [0.2.5] - 2026-11-16
 
 ### 新增
@@ -87,7 +103,8 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
-[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.2...v0.2.3

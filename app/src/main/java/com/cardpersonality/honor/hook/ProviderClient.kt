@@ -46,6 +46,7 @@ object ProviderClient {
     private const val EXTRA_ID = "id"
     private const val EXTRA_DATA = "data"
     private const val EXTRA_EXISTS = "exists"
+    private const val EXTRA_WALLET = "wallet"
     private const val EXTRA_OK = "ok"
 
     private const val TTL_MS = 5_000L
@@ -113,6 +114,14 @@ object ProviderClient {
     /**
      * Schedules a background config refresh; never blocks, never probes twice concurrently.
      */
+    /**
+     * Wallet package this hook engine runs in (set by the engine at install). All config lookups
+     * use this namespace: new keys are "<package>|<type>:<identity>", legacy unprefixed keys are
+     * treated as Honor-wallet keys only (backward compatibility).
+     */
+    @Volatile
+    var walletPackage: String = Wallets.HONOR
+
     fun prefetchAsync() {
         if (!prefetchScheduled.compareAndSet(false, true)) return
         try {
@@ -250,13 +259,53 @@ object ProviderClient {
      */
     fun resolve(type: String, identity: String?): ResolvedFace? {
         val snap = config() ?: return null
+        return resolveFromSnapshot(snap, walletPackage, type, identity)
+    }
+
+    /** Candidate storage keys (wallet-scoped first, then legacy Honor keys when applicable). */
+    private fun candidateKeys(
+        type: String,
+        identity: String?,
+        wallet: String,
+    ): List<Pair<String, Boolean>> {
+        val out = ArrayList<Pair<String, Boolean>>(4)
+        val typeInner = CardKey.typeDefault(type).fileKey
         if (identity != null && identity.isNotEmpty()) {
-            val fileKey = CardKey(type, identity).fileKey
-            snap.cards[fileKey]?.let { return ResolvedFace(fileKey, it) }
+            out.add(Wallets.configKey(wallet, CardKey(type, identity).fileKey) to false)
         }
-        // "type:<type>" is the per-type fallback storage key.
-        val typeKey = CardKey.typeDefault(type).fileKey
-        snap.types[type]?.let { return ResolvedFace(typeKey, it) }
+        out.add(Wallets.configKey(wallet, typeInner) to true)
+        if (wallet == Wallets.HONOR) {
+            if (identity != null && identity.isNotEmpty()) {
+                out.add(CardKey(type, identity).fileKey to false)
+            }
+            out.add(typeInner to true)
+        }
+        return out
+    }
+
+    private fun typeDefaultVersion(snap: Snapshot, wallet: String, type: String): Int? {
+        val scoped = Wallets.configKey(wallet, CardKey.typeDefault(type).fileKey)
+        snap.types[scoped]?.let { return it }
+        if (wallet == Wallets.HONOR) {
+            snap.types[CardKey.typeDefault(type).fileKey]?.let { return it }
+            snap.types[type]?.let { return it }
+        }
+        return null
+    }
+
+    private fun resolveFromSnapshot(
+        snap: Snapshot,
+        wallet: String,
+        type: String,
+        identity: String?,
+    ): ResolvedFace? {
+        for ((key, isTypeDefault) in candidateKeys(type, identity, wallet)) {
+            if (isTypeDefault) {
+                val version = typeDefaultVersion(snap, wallet, type) ?: continue
+                return ResolvedFace(key, version)
+            }
+            snap.cards[key]?.let { return ResolvedFace(key, it) }
+        }
         return null
     }
 
@@ -269,18 +318,31 @@ object ProviderClient {
      */
     fun hiddenElements(type: String, identity: String?): List<String> {
         val snap = config() ?: return emptyList()
+        val wallet = walletPackage
         val out = ArrayList<String>()
-        if (identity != null && identity.isNotEmpty()) {
-            snap.hidden[CardKey(type, identity).fileKey]?.let { out.addAll(it) }
+        for ((key, isTypeDefault) in candidateKeys(type, identity, wallet)) {
+            if (!isTypeDefault) snap.hidden[key]?.let { out.addAll(it) }
         }
-        snap.typeHidden[type]?.let { out.addAll(it) }
+        val scopedTypeKey = Wallets.configKey(wallet, CardKey.typeDefault(type).fileKey)
+        snap.typeHidden[scopedTypeKey]?.let { out.addAll(it) }
+        if (wallet == Wallets.HONOR) {
+            snap.typeHidden[CardKey.typeDefault(type).fileKey]?.let { out.addAll(it) }
+            snap.typeHidden[type]?.let { out.addAll(it) }
+        }
         return out.distinct()
     }
 
     /** Re-resolves a stored fileKey ("type:identity" / "type:<type>") after a config change. */
     fun resolveFileKey(fileKey: String): ResolvedFace? {
-        val key = CardKey.fromFileKey(fileKey) ?: return null
-        return resolve(key.type, key.id)
+        val (wallet, inner) = Wallets.splitKey(fileKey)
+        val snap = config() ?: return null
+        val scoped = Wallets.configKey(wallet, inner)
+        snap.cards[scoped]?.let { return ResolvedFace(scoped, it) }
+        if (wallet == Wallets.HONOR) {
+            snap.cards[inner]?.let { return ResolvedFace(inner, it) }
+        }
+        val key = CardKey.fromFileKey(inner) ?: return null
+        return resolveFromSnapshot(snap, wallet, key.type, key.id)
     }
 
     /** Reports detected cards (JSON array of CardInfo) to the app. MUST run on a worker thread. */
@@ -288,7 +350,10 @@ object ProviderClient {
         if (System.currentTimeMillis() < unavailableUntil) return false
         val ctx = appContext() ?: return false
         return try {
-            val extras = Bundle().apply { putString(EXTRA_JSON, cardsJson) }
+            val extras = Bundle().apply {
+                putString(EXTRA_JSON, cardsJson)
+                putString(EXTRA_WALLET, walletPackage)
+            }
             val result = ctx.contentResolver.call(Uri.parse(BASE_URI), CALL_REPORT, null, extras)
             val ok = result?.getBoolean(EXTRA_OK, false) == true
             HLog.lim("report_ok", 5) { "report: ok=$ok cards=${cardsJson.take(200)}" }

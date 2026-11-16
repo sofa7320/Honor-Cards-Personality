@@ -18,9 +18,14 @@ class XposedEntry : IXposedHookLoadPackage {
         try {
             val pkg = lpparam.packageName ?: "?"
             val proc = lpparam.processName ?: "?"
-            if (pkg == FaceHookEngine.WALLET_PACKAGE) {
-                HLog.i("$ALIVE_MSG pkg=$pkg proc=$proc first=${lpparam.isFirstApplication}")
-                FaceHookEngine.install(lpparam.classLoader)
+            // Round-10 multi-wallet dispatch: each known wallet package gets its own engine.
+            val target = Wallets.target(pkg)
+            if (target != null) {
+                HLog.i("$ALIVE_MSG wallet=${target.kind} pkg=$pkg proc=$proc first=${lpparam.isFirstApplication}")
+                when (target.pkg) {
+                    Wallets.HONOR -> FaceHookEngine.install(lpparam.classLoader)
+                    else -> com.cardpersonality.honor.hook.oppo.OppoFaceHookEngine.install(lpparam.classLoader, proc)
+                }
             } else {
                 HLog.lim("loaded_$pkg", 1) { "$ALIVE_MSG pkg=$pkg proc=$proc" }
             }

@@ -129,47 +129,98 @@ object FaceRepository {
     // ------------------------------------------------------------------ config resolution
 
     /** A config plus the storage key it was resolved from (export file name uses this key). */
-    data class Resolved(val key: CardKey, val config: CardFaceConfig)
+    data class Resolved(
+        val key: CardKey,
+        val config: CardFaceConfig,
+        /** Exact storage key including an optional wallet package prefix. */
+        val fileKey: String = key.fileKey,
+    )
 
     /**
      * Resolution order: exact card config with a custom image -> per-type default config with a
      * custom image -> exact/type config without image (elements only, used for 元素组件 toggles).
      */
-    fun effective(ctx: Context, type: String, id: String): Resolved? {
+    fun effective(
+        ctx: Context,
+        type: String,
+        id: String,
+        walletPackage: String? = null,
+    ): Resolved? {
         val store = store(ctx)
+        val wallet = WalletScope.normalize(walletPackage)
         val exactKey = CardKey(type, id)
-        val exact = store.cards[exactKey.fileKey]
-        if (exact != null && exact.hasCustomFace) return Resolved(exactKey, exact)
-        val typeCfg = store.types[type]
-        if (typeCfg != null && typeCfg.hasCustomFace) return Resolved(CardKey.typeDefault(type), typeCfg)
+        val scopedExactKey = WalletScope.configFileKey(exactKey, wallet)
+        val exact = store.cards[scopedExactKey]
+            ?: if (WalletScope.isHonor(wallet)) store.cards[exactKey.fileKey] else null
+        val exactStorageKey = if (store.cards.containsKey(scopedExactKey)) scopedExactKey else exactKey.fileKey
+        if (exact != null && exact.hasCustomFace) return Resolved(exactKey, exact, exactStorageKey)
+
+        val typeKey = CardKey.typeDefault(type)
+        val scopedTypeKey = WalletScope.configFileKey(typeKey, wallet)
+        val typeCfg = store.types[scopedTypeKey]
+            ?: if (WalletScope.isHonor(wallet)) store.types[type] else null
+        val typeStorageKey = if (store.types.containsKey(scopedTypeKey)) scopedTypeKey else typeKey.fileKey
+        if (typeCfg != null && typeCfg.hasCustomFace) return Resolved(typeKey, typeCfg, typeStorageKey)
+
         val fallback = exact ?: typeCfg
-        return fallback?.let { Resolved(exactKey, it) }
+        return fallback?.let {
+            Resolved(exactKey, it, if (exact != null) exactStorageKey else typeStorageKey)
+        }
     }
 
-    fun resolveConfig(ctx: Context, type: String, id: String): CardFaceConfig? =
-        effective(ctx, type, id)?.config
+    fun resolveConfig(
+        ctx: Context,
+        type: String,
+        id: String,
+        walletPackage: String? = null,
+    ): CardFaceConfig? = effective(ctx, type, id, walletPackage)?.config
 
-    fun hasCustomFace(ctx: Context, type: String, id: String): Boolean =
-        effective(ctx, type, id)?.config?.hasCustomFace == true
+    fun hasCustomFace(
+        ctx: Context,
+        type: String,
+        id: String,
+        walletPackage: String? = null,
+    ): Boolean = effective(ctx, type, id, walletPackage)?.config?.hasCustomFace == true
 
     /** Version of the config that actually feeds the wallet (exact or type default). */
-    fun cardVersion(ctx: Context, type: String, id: String): Int =
-        effective(ctx, type, id)?.config?.version ?: 0
+    fun cardVersion(
+        ctx: Context,
+        type: String,
+        id: String,
+        walletPackage: String? = null,
+    ): Int = effective(ctx, type, id, walletPackage)?.config?.version ?: 0
 
-    /** Hidden wallet element ids = exact config ∪ type default config. */
-    fun hiddenAppElements(ctx: Context, type: String, id: String): List<String> {
+    /** Hidden wallet element ids = exact config ∪ type default config (wallet-scoped). */
+    fun hiddenAppElements(
+        ctx: Context,
+        type: String,
+        id: String,
+        walletPackage: String? = null,
+    ): List<String> {
         val store = store(ctx)
-        val exact = store.cards[CardKey(type, id).fileKey]?.hiddenAppElements.orEmpty()
-        val typeCfg = store.types[type]?.hiddenAppElements.orEmpty()
+        val wallet = WalletScope.normalize(walletPackage)
+        val scopedExact = WalletScope.configFileKey(CardKey(type, id), wallet)
+        val scopedType = WalletScope.configFileKey(CardKey.typeDefault(type), wallet)
+        val exact = (store.cards[scopedExact]?.hiddenAppElements.orEmpty() +
+            if (WalletScope.isHonor(wallet)) store.cards[CardKey(type, id).fileKey]?.hiddenAppElements.orEmpty() else emptyList())
+        val typeCfg = (store.types[scopedType]?.hiddenAppElements.orEmpty() +
+            if (WalletScope.isHonor(wallet)) store.types[type]?.hiddenAppElements.orEmpty() else emptyList())
         return (exact + typeCfg).distinct()
     }
 
-    fun loadCard(ctx: Context, key: CardKey): CardFaceConfig? {
+    fun loadCard(
+        ctx: Context,
+        key: CardKey,
+        walletPackage: String? = null,
+    ): CardFaceConfig? {
         val store = store(ctx)
+        val wallet = WalletScope.normalize(walletPackage)
+        val scoped = WalletScope.configFileKey(key, wallet)
+        val legacy = if (WalletScope.isHonor(wallet)) key.fileKey else null
         return if (key.id == CardKey.TYPE_DEFAULT_ID) {
-            store.types[key.type]
+            store.types[scoped] ?: legacy?.let { store.types[it] }
         } else {
-            store.cards[key.fileKey] ?: store.types[key.type]
+            store.cards[scoped] ?: legacy?.let { store.cards[it] } ?: store.types[scoped]
         }
     }
 
@@ -182,11 +233,17 @@ object FaceRepository {
      *  - re-renders exports/<sha256(key)>.jpg.
      */
     @Synchronized
-    fun saveCard(ctx: Context, key: CardKey, config: CardFaceConfig): CardFaceConfig {
+    fun saveCard(
+        ctx: Context,
+        key: CardKey,
+        config: CardFaceConfig,
+        walletPackage: String? = null,
+    ): CardFaceConfig {
         val store = store(ctx)
-        val fileKey = key.fileKey
+        val wallet = WalletScope.normalize(walletPackage)
+        val fileKey = WalletScope.configFileKey(key, wallet)
         val previous = if (key.id == CardKey.TYPE_DEFAULT_ID) {
-            store.types[key.type]
+            store.types[fileKey]
         } else {
             store.cards[fileKey]
         }
@@ -202,26 +259,36 @@ object FaceRepository {
         val cards = HashMap(store.cards)
         val types = HashMap(store.types)
         if (key.id == CardKey.TYPE_DEFAULT_ID) {
-            types[key.type] = saved
+            types[fileKey] = saved
         } else {
             cards[fileKey] = saved
         }
         writeStore(ctx, ConfigStore(globalVersion, now, cards, types))
-        val resolvedKey = effective(ctx, key.type, key.id)?.key ?: key
-        renderExport(ctx, resolvedKey)
+        renderExport(ctx, key, wallet)
         notifyWalletConfigChanged(ctx)
         // Hand the caller absolute paths back for UI state.
         return saved
     }
 
     @Synchronized
-    fun clearCard(ctx: Context, key: CardKey) {
+    fun clearCard(ctx: Context, key: CardKey, walletPackage: String? = null) {
         val store = store(ctx)
+        val wallet = WalletScope.normalize(walletPackage)
+        val fileKey = WalletScope.configFileKey(key, wallet)
         val cards = HashMap(store.cards)
         val types = HashMap(store.types)
-        if (key.id == CardKey.TYPE_DEFAULT_ID) types.remove(key.type) else cards.remove(key.fileKey)
+        if (key.id == CardKey.TYPE_DEFAULT_ID) {
+            types.remove(fileKey)
+        } else {
+            cards.remove(fileKey)
+        }
+        if (WalletScope.isHonor(wallet)) {
+            // legacy unprefixed key (old configs)
+            if (key.id == CardKey.TYPE_DEFAULT_ID) types.remove(key.type) else cards.remove(key.fileKey)
+        }
         writeStore(ctx, store.copy(version = store.version + 1, updatedAt = System.currentTimeMillis(), cards = cards, types = types))
-        exportFile(ctx, key.fileKey)?.delete()
+        exportFile(ctx, fileKey)?.delete()
+        if (WalletScope.isHonor(wallet)) exportFile(ctx, key.fileKey)?.delete()
         notifyWalletConfigChanged(ctx)
     }
 
@@ -254,36 +321,57 @@ object FaceRepository {
         File(File(ctx.filesDir, EXPORT_DIR), Hashing.sha256Hex(fileKey) + ".jpg")
 
     /** Existing export file for the effective config, or null when the card has no custom face. */
-    fun exportFileFor(ctx: Context, type: String, id: String): File? {
-        val resolved = effective(ctx, type, id) ?: return null
+    fun exportFileFor(
+        ctx: Context,
+        type: String,
+        id: String,
+        walletPackage: String? = null,
+    ): File? {
+        val resolved = effective(ctx, type, id, walletPackage) ?: return null
         if (!resolved.config.hasCustomFace) return null
-        val file = exportFile(ctx, resolved.key.fileKey)
+        val file = exportFile(ctx, resolved.fileKey)
         return if (file.isFile) file else null
     }
 
     /** Ensures the exported JPEG exists (re-renders from config when missing). */
     @Synchronized
-    fun ensureExport(ctx: Context, type: String, id: String): File? {
-        val resolved = effective(ctx, type, id) ?: return null
+    fun ensureExport(
+        ctx: Context,
+        type: String,
+        id: String,
+        walletPackage: String? = null,
+    ): File? {
+        val resolved = effective(ctx, type, id, walletPackage) ?: return null
         if (!resolved.config.hasCustomFace) return null
-        val file = exportFile(ctx, resolved.key.fileKey)
+        val file = exportFile(ctx, resolved.fileKey)
         if (file.isFile && file.length() > 0L) return file
-        return if (renderExport(ctx, resolved.key)) file else null
+        return if (renderExport(ctx, resolved.key, walletPackage)) file else null
     }
 
     @Synchronized
-    fun renderExport(ctx: Context, key: CardKey): Boolean {
+    fun renderExport(ctx: Context, key: CardKey, walletPackage: String? = null): Boolean {
         val store = store(ctx)
-        val cfg = if (key.id == CardKey.TYPE_DEFAULT_ID) store.types[key.type] else store.cards[key.fileKey]
+        val wallet = WalletScope.normalize(walletPackage)
+        val fileKey = WalletScope.configFileKey(key, wallet)
+        val cfg = if (key.id == CardKey.TYPE_DEFAULT_ID) {
+            store.types[fileKey] ?: if (WalletScope.isHonor(wallet)) store.types[key.type] else null
+        } else {
+            store.cards[fileKey] ?: if (WalletScope.isHonor(wallet)) store.cards[key.fileKey] else null
+        }
         if (cfg == null || !cfg.hasCustomFace) return false
-        val out = exportFile(ctx, key.fileKey)
-        return FaceRenderer.renderToFile(ctx, cfg, out)
+        val out = exportFile(ctx, fileKey)
+        return FaceRenderer.renderToFile(ctx, cfg, out, walletPackage = wallet)
     }
 
     // ------------------------------------------------------------------ provider helpers
 
-    fun configJson(ctx: Context, type: String, id: String): String {
-        val resolved = effective(ctx, type, id) ?: return "{}"
+    fun configJson(
+        ctx: Context,
+        type: String,
+        id: String,
+        walletPackage: String? = null,
+    ): String {
+        val resolved = effective(ctx, type, id, walletPackage) ?: return "{}"
         return resolved.config.toJson().toString()
     }
 
@@ -300,12 +388,12 @@ object FaceRepository {
             return false
         }
         if (incoming.isEmpty()) return false
-        val existing = cards(ctx).associateBy { it.key.fileKey }
+        val existing = cards(ctx).associateBy { it.scopedFileKey() }
         val merged = LinkedHashMap<String, CardInfo>()
         existing.forEach { (k, v) -> merged[k] = v }
         val now = System.currentTimeMillis()
         for (card in incoming) {
-            val key = card.key.fileKey
+            val key = card.scopedFileKey()
             val old = merged[key]
             merged[key] = card.copy(
                 lastSeen = if (card.lastSeen > 0L) card.lastSeen else now,

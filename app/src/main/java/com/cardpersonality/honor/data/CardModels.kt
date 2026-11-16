@@ -101,8 +101,15 @@ data class CardInfo(
      * face for cards without a custom one. Null = no URL / not reported.
      */
     val faceUrl: String? = null,
+    /** Round-10: wallet package that reported this card (legacy reports default to Honor). */
+    val walletPackage: String = WalletScope.HONOR,
+    /** Round-10: "honor"/"oppo" (derived from [walletPackage] when the report omits it). */
+    val walletKind: String = WalletScope.kindOf(WalletScope.HONOR),
 ) {
     val type: String get() = key.type
+
+    /** Wallet-scoped storage key: legacy for Honor, "<pkg>|<type>:<identity>" otherwise. */
+    fun scopedFileKey(): String = WalletScope.configFileKey(key, walletPackage)
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("type", key.type)
@@ -112,6 +119,8 @@ data class CardInfo(
         put("lastSeen", lastSeen)
         put("appElementIds", JSONArray(appElementIds))
         if (faceUrl != null) put("faceUrl", faceUrl) else put("faceUrl", JSONObject.NULL)
+        put("wallet", walletPackage)
+        put("walletKind", walletKind)
     }
 
     companion object {
@@ -121,6 +130,8 @@ data class CardInfo(
                 "identity",
                 o.optString("id", ""),
             )
+            val wallet = o.optString("wallet", "").ifBlank { WalletScope.HONOR }
+            val walletKind = o.optString("walletKind", "").ifBlank { WalletScope.kindOf(wallet) }
             return CardInfo(
                 key = CardKey(type, identity),
                 name = o.optString("name", ""),
@@ -128,6 +139,8 @@ data class CardInfo(
                 lastSeen = o.optLong("lastSeen", 0L),
                 appElementIds = o.optJSONArray("appElementIds").toStringList(),
                 faceUrl = o.optString("faceUrl", "").ifEmpty { null }.takeUnless { it == "null" },
+                walletPackage = wallet,
+                walletKind = walletKind,
             )
         }
     }

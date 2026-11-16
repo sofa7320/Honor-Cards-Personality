@@ -1445,7 +1445,12 @@ object FaceHookEngine {
         val arr = JSONArray()
         for (info in detected.values) {
             try {
-                arr.put(info.toJson())
+                val o = info.toJson()
+                // Round-10: wallet dimension in the report (panel groups cards per wallet).
+                o.put("wallet", ProviderClient.walletPackage)
+                o.put("walletKind", Wallets.kindOf(ProviderClient.walletPackage))
+                o.put("walletLabel", Wallets.labelOf(ProviderClient.walletPackage))
+                arr.put(o)
             } catch (_: Throwable) {
             }
         }

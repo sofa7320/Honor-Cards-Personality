@@ -30,12 +30,17 @@ fun CardPersonalityApp() {
     CardPersonalityTheme {
         val ctx = LocalContext.current
         var editorTarget by remember { mutableStateOf<EditorTarget?>(null) }
+        var showAbout by remember { mutableStateOf(false) }
         val target = editorTarget
 
         val enter = remember { Animatable(1f) }
         // Skip the entrance animation on the very first frame so the initial screen never flashes.
         var firstFrame by remember { mutableStateOf(true) }
-        val navigationKey = target?.key?.fileKey ?: "__home__"
+        val navigationKey = when {
+            target != null -> target.key.fileKey
+            showAbout -> "__about__"
+            else -> "__home__"
+        }
         LaunchedEffect(navigationKey) {
             if (firstFrame) {
                 firstFrame = false
@@ -59,12 +64,21 @@ fun CardPersonalityApp() {
                     .background(MiuixTheme.colorScheme.background)
                     .graphicsLayer { alpha = enter.value },
             ) {
-                if (target == null) {
-                    HomeScreen(ctx = ctx, onOpenEditor = { editorTarget = it })
-                } else {
-                    EditorScreen(ctx = ctx, target = target, onDone = { editorTarget = null })
+                when {
+                    target != null -> EditorScreen(
+                        ctx = ctx,
+                        target = target,
+                        onDone = { editorTarget = null },
+                    )
+                    showAbout -> AboutScreen(ctx = ctx, onBack = { showAbout = false })
+                    else -> HomeScreen(
+                        ctx = ctx,
+                        onOpenEditor = { editorTarget = it },
+                        onOpenAbout = { showAbout = true },
+                    )
                 }
             }
         }
     }
 }
+

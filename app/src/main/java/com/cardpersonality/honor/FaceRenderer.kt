@@ -36,6 +36,30 @@ object FaceGeometry {
     const val DESIGN_HEIGHT = 208f
     const val ASPECT = DESIGN_WIDTH / DESIGN_HEIGHT // 1.6153846
 
+    /** Wallet package whose card face uses a different aspect/corner radius (欧加钱包). */
+    const val OPPO_WALLET_PACKAGE = "com.finshell.wallet"
+
+    /**
+     * Per-wallet card-face geometry (design units + wallet-side corner radius).
+     * Honor: 336:208 (corner 12dp, unchanged); OPPO/欧加: 328:202 (≈960:591, corner 14dp).
+     * The normalized 0..1 sticker coordinates are shared by both, so configs stay compatible.
+     */
+    data class FaceSpec(
+        val designWidth: Float,
+        val designHeight: Float,
+        val cornerRadiusDp: Float,
+        val walletPackage: String?,
+    ) {
+        val aspect: Float get() = designWidth / designHeight
+        val label: String get() = "${designWidth.toInt()} : ${designHeight.toInt()}"
+    }
+
+    val HONOR_SPEC = FaceSpec(DESIGN_WIDTH, DESIGN_HEIGHT, 12f, null)
+    val OPPO_SPEC = FaceSpec(328f, 202f, 14f, OPPO_WALLET_PACKAGE)
+
+    fun specFor(walletPackage: String?): FaceSpec =
+        if (walletPackage == OPPO_WALLET_PACKAGE) OPPO_SPEC else HONOR_SPEC
+
     const val MIN_SCALE = 0.4f
     const val MAX_SCALE = 4f
 
@@ -360,6 +384,14 @@ object FaceImageLoader {
         return File(base, path).absolutePath
     }
 
+    /** Drops cached decodes of [path] (any maxDimension) so an updated file is re-read. */
+    fun evict(path: String?) {
+        if (path.isNullOrEmpty()) return
+        val prefix = path + "@"
+        val keys = runCatching { cache.snapshot().keys.toList() }.getOrDefault(emptyList())
+        keys.filter { it.startsWith(prefix) }.forEach { cache.remove(it) }
+    }
+
     fun load(path: String?, maxDimension: Int = 2560): Bitmap? {
         if (path.isNullOrEmpty()) return null
         val file = File(path)
@@ -409,15 +441,23 @@ object FaceRenderer {
      * being upscaled to 2016×1248 and downscaled by the wallet (two resamples → soft). Phone photos
      * (≥2016px wide) still export at the full 6x = 2016×1248.
      */
-    fun adaptiveExportSize(ctx: Context?, cfg: CardFaceConfig): android.util.Size? {
+    fun adaptiveExportSize(
+        ctx: Context?,
+        cfg: CardFaceConfig,
+        walletPackage: String? = null,
+    ): android.util.Size? {
+        val spec = FaceGeometry.specFor(walletPackage)
         val image = FaceImageLoader.load(FaceImageLoader.resolvePath(ctx, cfg.imagePath))
         val baseWidth = image?.width ?: 0
         val scale = if (baseWidth <= 0) {
             6
         } else {
-            (baseWidth.toFloat() / FaceGeometry.DESIGN_WIDTH).roundToInt().coerceIn(2, 6)
+            (baseWidth.toFloat() / spec.designWidth).roundToInt().coerceIn(2, 6)
         }
-        return android.util.Size(FaceGeometry.DESIGN_WIDTH.toInt() * scale, FaceGeometry.DESIGN_HEIGHT.toInt() * scale)
+        return android.util.Size(
+            spec.designWidth.toInt() * scale,
+            spec.designHeight.toInt() * scale,
+        )
     }
 
     fun render(
@@ -425,18 +465,20 @@ object FaceRenderer {
         cfg: CardFaceConfig,
         width: Int = 0,
         height: Int = 0,
+        walletPackage: String? = null,
     ): Bitmap? {
+        val spec = FaceGeometry.specFor(walletPackage)
         val (w, h) = if (width > 0 && height > 0) {
             width to height
         } else {
-            val size = adaptiveExportSize(ctx, cfg) ?: return null
+            val size = adaptiveExportSize(ctx, cfg, walletPackage) ?: return null
             size.width to size.height
         }
         if (w <= 0 || h <= 0) return null
         return try {
             val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
-            draw(ctx, cfg, canvas, w.toFloat(), h.toFloat())
+            draw(ctx, cfg, canvas, w.toFloat(), h.toFloat(), spec.designWidth, spec.designHeight)
             bitmap
         } catch (_: Throwable) {
             null
@@ -450,8 +492,9 @@ object FaceRenderer {
         outFile: File,
         width: Int = 0,
         height: Int = 0,
+        walletPackage: String? = null,
     ): Boolean {
-        val bitmap = render(ctx, cfg, width, height) ?: return false
+        val bitmap = render(ctx, cfg, width, height, walletPackage) ?: return false
         return try {
             outFile.parentFile?.mkdirs()
             val tmp = File(outFile.absolutePath + ".tmp")
@@ -471,7 +514,15 @@ object FaceRenderer {
     }
 
     /** Core composition; shared by [render] (and the preview replicates its math). */
-    fun draw(ctx: Context?, cfg: CardFaceConfig, canvas: Canvas, width: Float, height: Float) {
+    fun draw(
+        ctx: Context?,
+        cfg: CardFaceConfig,
+        canvas: Canvas,
+        width: Float,
+        height: Float,
+        designWidth: Float = FaceGeometry.DESIGN_WIDTH,
+        designHeight: Float = FaceGeometry.DESIGN_HEIGHT,
+    ) {
         // 1. background
         bgPaint.shader = LinearGradient(
             0f, 0f, width, height,
@@ -516,7 +567,7 @@ object FaceRenderer {
         }
 
         // 3. user stickers: list index 0 is the TOP-most layer, so draw in reverse order.
-        val designScale = width / FaceGeometry.DESIGN_WIDTH
+        val designScale = width / designWidth
         for (spec in cfg.stickers.asReversed()) {
             if (!spec.visible) continue
             when (spec.kind) {
@@ -664,6 +715,9 @@ object FaceRenderer {
 internal fun Float.safe(): Float = if (isNaN() || isInfinite()) 0f else this
 
 internal fun Int.clamp255(): Int = min(max(this, 0), 255)
+
+
+
 
 
 

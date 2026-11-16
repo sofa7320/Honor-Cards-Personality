@@ -11,6 +11,9 @@ import android.util.Log
 import com.cardpersonality.honor.data.CardKey
 import com.cardpersonality.honor.data.FaceRepository
 import com.cardpersonality.honor.data.Hashing
+import com.cardpersonality.honor.hook.Wallets
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileNotFoundException
 
@@ -50,9 +53,14 @@ class FaceProvider : ContentProvider() {
                 CALL_REPORT -> {
                     val json = extras?.getString(EXTRA_JSON)
                     val ok = FaceRepository.reportCards(ctx, json)
+                    // Round-10: remember which wallet package reported cards (active wallet).
+                    extras?.getString(EXTRA_WALLET)?.takeIf { it.isNotBlank() }?.let { pkg ->
+                        rememberActiveWallet(ctx, pkg)
+                    }
                     out.putBoolean(EXTRA_OK, ok)
                     out.putInt(EXTRA_VERSION, FaceRepository.storeVersion(ctx))
                 }
+                CALL_WALLETS -> putWallets(ctx, out)
                 CALL_GET_REPORT -> {
                     out.putString(EXTRA_JSON, FaceRepository.reportJson(ctx))
                     out.putBoolean(EXTRA_OK, true)
@@ -84,6 +92,57 @@ class FaceProvider : ContentProvider() {
         }
     }
 
+    /**
+     * Round-10 wallet detection for the panel: known wallet packages with install state, version
+     * name and kind, plus the active wallet package (last package that reported cards).
+     * Returning this does not launch or touch the other wallet app.
+     */
+    private fun putWallets(ctx: Context, out: Bundle) {
+        val pm = ctx.packageManager
+        val arr = JSONArray()
+        for (wallet in Wallets.ALL) {
+            val info = try {
+                pm.getPackageInfo(wallet.pkg, 0)
+            } catch (_: Throwable) {
+                null
+            }
+            arr.put(
+                JSONObject()
+                    .put("package", wallet.pkg)
+                    .put("label", wallet.label)
+                    .put("kind", wallet.kind)
+                    .put("installed", info != null)
+                    .put("versionName", info?.versionName ?: ""),
+            )
+        }
+        val json = JSONObject()
+            .put("wallets", arr)
+            .put("activeWalletPackage", readActiveWallet(ctx))
+        out.putString(EXTRA_JSON, json.toString())
+        out.putBoolean(EXTRA_OK, true)
+    }
+
+    private fun activeWalletFile(ctx: Context): File = File(ctx.filesDir, ACTIVE_WALLET_FILE)
+
+    private fun rememberActiveWallet(ctx: Context, pkg: String) {
+        try {
+            val file = activeWalletFile(ctx)
+            if (file.isFile && file.readText(Charsets.UTF_8).trim() == pkg) return
+            file.writeText(pkg, Charsets.UTF_8)
+            Log.i(TAG, "active wallet package: $pkg")
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun readActiveWallet(ctx: Context): String {
+        return try {
+            val file = activeWalletFile(ctx)
+            if (file.isFile) file.readText(Charsets.UTF_8).trim() else ""
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
     private fun putConfig(ctx: Context, out: Bundle) {
         val json = try {
             FaceRepository.configFile(ctx).readText(Charsets.UTF_8)
@@ -107,9 +166,10 @@ class FaceProvider : ContentProvider() {
             out.putString(EXTRA_ERROR, "type/id required")
             return
         }
-        out.putString(EXTRA_JSON, FaceRepository.configJson(ctx, type, id))
-        out.putInt(EXTRA_VERSION, FaceRepository.cardVersion(ctx, type, id))
-        out.putBoolean(EXTRA_HAS_CUSTOM_FACE, FaceRepository.hasCustomFace(ctx, type, id))
+        val wallet = extras?.getString(EXTRA_WALLET)
+        out.putString(EXTRA_JSON, FaceRepository.configJson(ctx, type, id, wallet))
+        out.putInt(EXTRA_VERSION, FaceRepository.cardVersion(ctx, type, id, wallet))
+        out.putBoolean(EXTRA_HAS_CUSTOM_FACE, FaceRepository.hasCustomFace(ctx, type, id, wallet))
         out.putBoolean(EXTRA_OK, true)
     }
 
@@ -240,6 +300,7 @@ class FaceProvider : ContentProvider() {
         const val CALL_SAVE_ORIGINAL = "saveOriginalFace"
         const val CALL_ORIGINAL_EXISTS = "originalExists"
         const val CALL_PING = "ping"
+        const val CALL_WALLETS = "wallets"
 
         const val EXTRA_JSON = "json"
         const val EXTRA_TYPE = "type"
@@ -252,12 +313,16 @@ class FaceProvider : ContentProvider() {
         const val EXTRA_OK = "ok"
         const val EXTRA_ERROR = "error"
         const val EXTRA_PONG = "pong"
+        const val EXTRA_WALLET = "wallet"
 
         /** Only these card types may store original-face snapshots. */
         private val ORIGINAL_TYPES = setOf("transit", "bank", "access", "campus", "carkey", "ebike")
 
         /** Directory under filesDir holding hook-captured original faces. */
         const val ORIGINAL_DIR = "originals"
+
+        /** File remembering which wallet package last reported cards (active wallet). */
+        private const val ACTIVE_WALLET_FILE = "active_wallet.txt"
 
         /** Hard cap for one stored snapshot (hook sends long-side<=640 JPEG q85). */
         private const val ORIGINAL_MAX_BYTES = 3 * 1024 * 1024

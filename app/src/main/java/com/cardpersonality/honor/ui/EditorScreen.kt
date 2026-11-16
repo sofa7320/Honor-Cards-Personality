@@ -129,6 +129,8 @@ data class EditorTarget(
     val title: String,
     val subtitle: String = "",
     val appElementIds: List<String> = emptyList(),
+    /** Wallet package this card was detected in (null = infer from installed wallets). */
+    val walletPackage: String? = null,
 )
 
 /** Which colour of which sticker the colour picker dialog is editing. */
@@ -578,6 +580,7 @@ fun EditorScreen(
                     PreviewWithSelection(
                         selectedState = selectedSticker,
                         cfg = cfg,
+                        walletPackage = target.walletPackage,
                         modifier = Modifier
                             .fillMaxWidth()
                             .widthIn(max = 420.dp),
@@ -650,14 +653,18 @@ fun EditorScreen(
                         }
                     }
                 }
+                val faceSpec = FaceGeometry.specFor(target.walletPackage)
                 val previewWidth = previewImage?.width ?: 0
                 val exportScale = if (previewWidth <= 0) {
                     6
                 } else {
-                    (previewWidth.toFloat() / 336f).roundToInt().coerceIn(2, 6)
+                    (previewWidth.toFloat() / faceSpec.designWidth).roundToInt().coerceIn(2, 6)
                 }
                 Text(
-                    text = "圆角 12dp · 比例 336 : 208 · 导出 ${336 * exportScale} × ${208 * exportScale}（${exportScale}x）",
+                    text = "圆角 ${faceSpec.cornerRadiusDp.toInt()}dp · 比例 " +
+                        "${faceSpec.designWidth.toInt()} : ${faceSpec.designHeight.toInt()} · 导出 " +
+                        "${faceSpec.designWidth.toInt() * exportScale} × " +
+                        "${faceSpec.designHeight.toInt() * exportScale}（${exportScale}x）",
                     style = MiuixTheme.textStyles.footnote2,
                     color = MiuixTheme.colorScheme.onBackgroundVariant,
                     modifier = Modifier
@@ -752,6 +759,7 @@ fun EditorScreen(
                         onRequestRename = { renameStickerId = it },
                     )
                     else -> AppElementsTab(
+                        ctx = ctx,
                         target = target,
                         cfg = cfg,
                         onCfgChange = { cfg = it },
@@ -1267,65 +1275,89 @@ private fun ElementsTab(
 
 @Composable
 private fun AppElementsTab(
+    ctx: Context,
     target: EditorTarget,
     cfg: CardFaceConfig,
     onCfgChange: (CardFaceConfig) -> Unit,
 ) {
-    val elementIds = AppElements.forType(target.key.type, target.appElementIds)
-    if (elementIds.isEmpty()) {
+    // Which wallet's elements to show: the card's own wallet when known, otherwise every
+    // installed supported wallet (Honor device -> Honor only; both installed -> grouped sections).
+    val installedWallets = remember { WalletPackages.installed(ctx) }
+    val activeWallets = remember(target.walletPackage, installedWallets) {
+        when {
+            target.walletPackage != null -> listOf(target.walletPackage)
+            installedWallets.isNotEmpty() -> installedWallets.map { it.packageName }
+            else -> listOf(WalletPackages.HONOR)
+        }
+    }
+    val perWallet = activeWallets.associateWith { pkg ->
+        AppElements.forType(
+            packageName = pkg,
+            type = target.key.type,
+            reported = if (pkg == WalletPackages.HONOR) target.appElementIds else emptyList(),
+        )
+    }
+    val anyElements = perWallet.values.any { it.isNotEmpty() }
+
+    if (!anyElements) {
+        val walletNames = activeWallets.joinToString("、") { WalletPackages.displayName(it) }
         Text(
-            text = "尚未识别到该卡类型的界面元素。\n\n完成对荣耀钱包的分析后，这里会列出钱包自己绘制的卡片元素（名称、卡号、余额等），你可以单独选择隐藏它们。默认始终“保持原样”。",
+            text = "尚未识别到该卡类型的界面元素。\n\n完成对${walletNames}的界面分析后，这里会列出钱包自己绘制的卡片元素（名称、卡号、余额等），你可以单独选择隐藏它们。默认始终“保持原样”。",
             style = MiuixTheme.textStyles.footnote1,
             color = MiuixTheme.colorScheme.onBackgroundVariant,
             modifier = Modifier.padding(horizontal = 22.dp, vertical = 12.dp),
         )
     } else {
-        SettingsGroup {
-            elementIds.forEach { id ->
-                val hidden = id in cfg.hiddenAppElements
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 18.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            text = AppElements.label(id),
-                            style = MiuixTheme.textStyles.body1,
-                        )
-                        Text(
-                            text = if (hidden) "已隐藏" else "保持原样",
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.onBackgroundVariant,
+        perWallet.forEach { (pkg, ids) ->
+            if (ids.isEmpty()) return@forEach
+            SmallTitle(WalletPackages.displayName(pkg) + " · " + pkg)
+            SettingsGroup {
+                ids.forEach { id ->
+                    val hidden = id in cfg.hiddenAppElements
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = AppElements.label(pkg, id),
+                                style = MiuixTheme.textStyles.body1,
+                            )
+                            Text(
+                                text = if (hidden) "已隐藏" else "保持原样",
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onBackgroundVariant,
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        SegmentedControl(
+                            options = listOf("保持原样", "隐藏"),
+                            selectedIndex = if (hidden) 1 else 0,
+                            onSelect = { index ->
+                                val nextHidden = if (index == 1) {
+                                    (cfg.hiddenAppElements + id).distinct()
+                                } else {
+                                    cfg.hiddenAppElements - id
+                                }
+                                onCfgChange(cfg.copy(hiddenAppElements = nextHidden))
+                            },
+                            modifier = Modifier.width(150.dp),
                         )
                     }
-                    Spacer(Modifier.width(12.dp))
-                    SegmentedControl(
-                        options = listOf("保持原样", "隐藏"),
-                        selectedIndex = if (hidden) 1 else 0,
-                        onSelect = { index ->
-                            val nextHidden = if (index == 1) {
-                                (cfg.hiddenAppElements + id).distinct()
-                            } else {
-                                cfg.hiddenAppElements - id
-                            }
-                            onCfgChange(cfg.copy(hiddenAppElements = nextHidden))
-                        },
-                        modifier = Modifier.width(150.dp),
-                    )
                 }
             }
         }
     }
+    val walletNames = activeWallets.joinToString("、") { WalletPackages.displayName(it) }
     Text(
-        text = "元素组件由荣耀钱包自行绘制在卡片上方。隐藏操作在模块支持后生效，默认不修改任何内容。",
+        text = "元素组件由${walletNames}自行绘制在卡片上方。隐藏操作在模块支持后生效，默认不修改任何内容。",
         style = MiuixTheme.textStyles.footnote1,
         color = MiuixTheme.colorScheme.onBackgroundVariant,
         modifier = Modifier.padding(horizontal = 22.dp, vertical = 12.dp),
     )
 }
-
 // --------------------------------------------------------------------------------- sub views
 
 @Composable
@@ -1724,6 +1756,7 @@ private fun PreviewWithSelection(
     selectedState: State<String?>,
     cfg: CardFaceConfig,
     modifier: Modifier = Modifier,
+    walletPackage: String? = null,
     backgroundImagePath: String? = null,
     snapEnabled: Boolean = false,
     onCfgChange: (CardFaceConfig) -> Unit,
@@ -1733,6 +1766,7 @@ private fun PreviewWithSelection(
         cfg = cfg,
         modifier = modifier,
         selectedStickerIdState = selectedState,
+        walletPackage = walletPackage,
         backgroundImagePath = backgroundImagePath,
         snapEnabled = snapEnabled,
         onCfgChange = onCfgChange,
@@ -2356,6 +2390,10 @@ private fun List<StickerSpec>.move(from: Int, to: Int): List<StickerSpec> {
     list.add(to, item)
     return list
 }
+
+
+
+
 
 
 

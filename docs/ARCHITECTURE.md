@@ -169,9 +169,13 @@ re-enter hooked getters.
   - `0.2.5` — round 9: cold-start quick-card fix (wallet-local config/face caches + pending
     face retry), higher-resolution original-face capture / current-face base, rotation ±270,
     weaker slider magnet, numeric input dialog, 2x render resolution (2016×1248)
+  - `0.2.6` — round 10: multi-wallet framework (Honor + OPPO/欧加钱包), wallet-scoped config
+    keys, wallet detection provider API, per-wallet geometry, OPPO fail-open card-face hooks
+    (static-only, no OPPO device). **No git tag / GitHub Release for this round.**
 - Release APKs are frozen as `work/module/poc/card-personality-v<N>-final.apk`; the current
-  delivery build is `v32-final` (versionName 0.2.5 / versionCode 1), verified with
-  `aapt2 dump badging` (`versionCode='1' versionName='0.2.5'`).
+  build is `v33-final` (versionName 0.2.6 / versionCode 1), verified with
+  `aapt2 dump badging` (`versionCode='1' versionName='0.2.6'`). Round-10 did NOT create a tag
+  or GitHub Release (explicit user requirement) — `dist/` packaging only.
 
 Round-4 model additions (owned by ui-dev; JSON is backward-compatible: every new field has a
 default, and the hook layer never parses sticker/config geometry — it only uses `version` and
@@ -324,3 +328,91 @@ Fixes (all in `hook/`):
   download) is sharper.
 - `useOriginalAsSource` picks the sharpest available original before writing the source image, and
   the source-image writer uses JPEG quality 95.
+## 14. Round-10: multi-wallet architecture + OPPO adaptation (0.2.6)
+
+### 14.1 Wallet registry and hook dispatch
+- `hook/Wallets.kt`: registry of supported wallets
+  - `com.hihonor.wallet` — 荣耀钱包, kind `honor` (existing engine, behavior unchanged)
+  - `com.finshell.wallet` — 欧加钱包 (OPPO/OnePlus/realme), kind `oppo`
+- `XposedEntry.handleLoadPackage` dispatches by package: Honor → `FaceHookEngine` (untouched),
+  OPPO → `hook/oppo/OppoFaceHookEngine` (fail-open, main wallet process only; other processes
+  incl. `:awareness/:bytelive/:downloader/:push/:worker` and hidden plugin class loaders are not
+  hooked). Every install is wrapped; missing classes only log once.
+- `ProviderClient.walletPackage` is the per-process wallet namespace (Honor by default, OPPO set by
+  the OPPO engine at install).
+
+### 14.2 Wallet-scoped config keys (backward compatible)
+- Legacy keys (`"<type>:<identity>"`, `"type:<type>"`) keep working and are treated as **Honor**.
+- New wallet-scoped form: `"<package>|<type>:<identity>"` / `"<package>|type:<type>"`
+  (e.g. `com.finshell.wallet|transit:<aid>`). `data/WalletScope.kt` builds/splits these keys;
+  `FaceRepository` accepts an optional `walletPackage` on `effective/saveCard/clearCard/
+  loadCard/hasCustomFace/cardVersion/hiddenAppElements/configJson/renderExport/...`.
+- Hook resolution order (`ProviderClient.resolve/hiddenElements/resolveFileKey`): wallet-scoped
+  exact → wallet-scoped type default → (Honor only) legacy exact → legacy type default.
+- `CardInfo` now carries `walletPackage`/`walletKind` (report JSON has `wallet`/`walletKind`/
+  `walletLabel`; legacy reports default to Honor) and `scopedFileKey()`.
+- Per-wallet export geometry: Honor 336:208 design / 12dp / 2016×1248 (adaptive), OPPO 328:202
+  (≈960:591) design / 14dp / exported ≈984×606 via `FaceGeometry.specFor(walletPackage)`.
+
+### 14.3 Provider: wallet detection
+`ContentResolver.call(uri, "wallets", null, null)` returns JSON:
+```
+{"wallets":[
+   {"package":"com.hihonor.wallet","label":"荣耀钱包","kind":"honor","installed":true,"versionName":"…"},
+   {"package":"com.finshell.wallet","label":"欧加钱包","kind":"oppo","installed":false,"versionName":""}],
+ "activeWalletPackage":"com.hihonor.wallet"}
+```
+`installed` comes from PackageManager (does NOT launch the other wallet); `activeWalletPackage` is
+the last wallet package that reported cards (hook sends `wallet` with each report; stored in
+`files/active_wallet.txt`). `getFaceConfig` also accepts an optional `wallet` extra.
+
+### 14.4 OPPO hooks (RE v2, static only — NO OPPO device available)
+
+Implemented in `hook/oppo/OppoFaceHookEngine.kt` from `work/re/oppo/FINDINGS.md` v2 (APK 5.52.0,
+package `com.finshell.wallet`). All hooks are fail-open, main-wallet-process only (other processes
+and hidden Shadow plugin class loaders are untouched), and never modify wallet data values.
+
+- **H-A (primary, covers list/detail/consume for all card types)** — `CircleNetworkImageView`
+  String loaders: `setImageUrl(String)`, `setImageBitmap(String)` (OPPO's String overload!),
+  `setImageUrlByTemp(String)`, `f1(String,int,boolean)`, **`e1(String,int,CircleNetworkImageView$i)`**
+  (eBike detail `EBikeBigPicViewHolder#V`, `BusShifSelectActivity`) and
+  **`i1(String,int,CircleNetworkImageView$i)`**, plus the low-level `g1/h1/j1` variants: on a
+  matched card the wallet's own Glide load is skipped and the module self-decodes the provider JPEG
+  on its worker thread, then calls `ImageView.setImageBitmap(Bitmap)` (no reliance on Glide
+  `content://` support, which is unverified for OPPO); the trailing listener/flags are irrelevant
+  to the bitmap path.
+- **H-B (auxiliary only)** — `FinBigCardFaceView#setCardFaceUrl`,
+  `FinCustomCardView#setCardFaceUrl`, `FinSmallCardFaceView#setImageBitmap(String)`,
+  `FinUINfcCardFaceView#showCardImg(String,…)`: used for offline compensation (the wallet's
+  `setCardFaceUrl` early-returns when `com.finshell.common.util.u.i(ctx)` says no network) and as a
+  context registry for refresh. `showCardImg` is **never skipped** — its logo/title/brightness
+  logic must still run; the module only schedules its bitmap on the inner face view afterwards.
+- **H-C (observe only, identity-based)** — after-hooks on `getCardImg()/getNewCardImg()` and
+  `EntranceCard#getLocalImgPath()` / `CardTheme#getCardImg()` (native "card theme" switches change
+  URL or local path). Identity comes from the card object's own fields — priority `aid` →
+  `appCode` → `cardNo` → `cardId/id` — never from URL text; observed URLs/local paths are only used
+  as keys into this identity map. Return values are never modified.
+- **H-E (text readability)** — `CardCoverSettingUtil$Companion#loadBitmapSync(ctx, url)`: for a
+  matched card the module returns its own decoded Bitmap, so the wallet's white/dark text-color
+  decision is computed from the custom face (avoids unreadable text on dark faces).
+- **Overlay hiding** — info-only whitelist (card list `tv_label/tv_name/tv_last_digest/single_tag/
+  tv_content`; big face `card_sign/card_status`; NFC face `iv_logo/tv_title/encrypt_label/
+  tv_plate_numb/tv_card_sign/keyValidView`; consume `nfc_consume_*` info views; `mEncryptLabel`…).
+  Functional ids (`btn_function`, `iv_action`, `vClickable`, `nfc_consume_retry_active_view` and any
+  click area) are NEVER hidden. KEEP is the default (empty hide list = no change); views hidden by
+  the module are tracked so they can be restored.
+- **Geometry** — OPPO detail/door faces 328:202 with 14dp corners (≈960:591 / main export
+  984×606 or 960×591); consume/swipe page ratio 1.62; card-list thumbnail 80×50 (1.6) with 4dp
+  corners. Geometry/rendering is app-side (`FaceGeometry.specFor(walletPackage)`); the hook only
+  supplies the face bitmap.
+- **Refresh** — `CONFIG_CHANGED` broadcast clears the decoded-bitmap cache and re-applies the new
+  face to still-attached views.
+- **Validation** — static only: the APK contains the OPPO package/classes/markers and all hooks are
+  guarded (one log per missing class). No OPPO device exists for this project, nothing was
+  installed/launched on the Honor test device, and the OPPO engine cannot run on it. Runtime
+  validation is a follow-up once an OPPO device is available.
+- **Out of scope (fail-open, left untouched)**: OPPO **EID** card faces (they are drawn through
+  `OCSComponentProviderImpl#w6`, not via `CircleNetworkImageView`; also legal-document risk — the
+  product decision is to exclude EID), desktop **widgets** (Seedling `RemoteViews` rendering in the
+  launcher) and any face path that sets a `Bitmap` directly. These surfaces simply keep the
+  wallet's own face; no hook attempts or partial replacements are made.
