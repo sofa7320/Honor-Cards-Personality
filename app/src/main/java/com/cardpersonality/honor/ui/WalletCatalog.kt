@@ -275,42 +275,6 @@ object WalletProbe {
             null
         }
     }
-
-    /**
-     * Optional discovery of installed wallet-like apps that are NOT in the supported list
-     * (provider call "scan_wallets"). Informational only — such packages are never auto-hooked.
-     */
-    fun scanUnknownWallets(ctx: Context): List<WalletStatus> {
-        return try {
-            val bundle = ctx.contentResolver.call(
-                android.net.Uri.parse("content://" + com.cardpersonality.honor.data.FaceRepository.AUTHORITY),
-                "scan_wallets",
-                null,
-                null,
-            ) ?: return emptyList()
-            val json = bundle.getString("json") ?: return emptyList()
-            val obj = org.json.JSONObject(json)
-            val array = obj.optJSONArray("wallets") ?: return emptyList()
-            buildList {
-                for (i in 0 until array.length()) {
-                    val item = array.optJSONObject(i) ?: continue
-                    val pkg = item.optString("package")
-                    if (pkg.isEmpty() || item.optBoolean("known", true)) continue
-                    add(
-                        WalletStatus(
-                            packageName = pkg,
-                            label = item.optString("label", pkg),
-                            kind = "unknown",
-                            installed = true,
-                            versionName = item.optString("versionName").takeIf { it.isNotEmpty() },
-                        ),
-                    )
-                }
-            }
-        } catch (_: Throwable) {
-            emptyList()
-        }
-    }
 }
 
 

@@ -176,9 +176,14 @@ re-enter hooked getters.
     package visibility + expanded candidate wallet registry), optional `scan_wallets` provider
     call, diagnostics journal `OpLog` (`files/oplog.txt`). Pre-release this round is published
     by the lead — the module agent only freezes the APK (no tag).
+  - `0.2.8` — round 12: OPPO 5.52.0 hook entry corrections (A0/y0/x0/setSvgUrl/F0 by name, local
+    file argument strategy), card-report robustness with `url:<sha24>` identity fallback, OPPO
+    engine diagnostics (`engine_state` provider call / `oppo_engine.json` / OpLog entries),
+    `fetchBrightnessUnderTextView*` brightness hook. PR-only round (no tag/Release, no main merge).
 - Release APKs are frozen as `work/module/poc/card-personality-v<N>-final.apk`; the current
-  build is `v36-final` (versionName 0.2.7 / versionCode 1), verified with
-  `aapt2 dump badging` (`versionCode='1' versionName='0.2.7'`). The lead owns tagging/releases.
+  build is `v37-final` (versionName 0.2.8 / versionCode 1), verified with
+  `aapt2 dump badging` (`versionCode='1' versionName='0.2.8'`). The lead owns tagging/releases;
+  round 12 is PR-only (feat/round12, no tag, no Release, no main merge).
 
 Round-4 model additions (owned by ui-dev; JSON is backward-compatible: every new field has a
 default, and the hook layer never parses sticker/config geometry — it only uses `version` and
@@ -448,3 +453,49 @@ registry only knew `com.finshell.wallet`). Fixes:
   process, face applied in the wallet, and provider fail-open (`hook|fail-open`).
 - UI API (About/diagnostic report): `OpLog.read(ctx, limit)`, `OpLog.report(ctx)`,
   `OpLog.path(ctx)`, `OpLog.file(ctx)`, `OpLog.record(ctx, source, action, detail)`.
+## 16. Round-12: OPPO 5.52.0 hook entry + card-report robustness + diagnostics (0.2.8)
+
+Based on external analysis `work/re/oppo/ANALYSIS-external-5.52.0.md` (5.52.0/552004): the real Glide
+entries are short R8 names with return types that changed, so matching by return type (old DIY
+modules) finds nothing; hooks must be explicit by method name + parameters.
+
+### 16.1 H-A entry corrections
+- View-known setters (unchanged strategy): `setImageUrl(String)`, `setImageBitmap(String)`,
+  `setImageUrlByTemp(String)`, `f1(String,int,boolean)`, `e1/i1/g1/h1/j1(String,int,Circle…$i)` —
+  matched card ⇒ skip the wallet's Glide load, self-decode our JPEG on the decode worker, then
+  `ImageView.setImageBitmap(Bitmap)`.
+- **URL-only Glide entries** (`A0(String)`, `y0(String,boolean)`, `x0(String)`, `setSvgUrl(String)`,
+  `F0(String)`) — these have no view and return a RequestBuilder/void, so skipping would break
+  callers. For a matched card the String argument is replaced with a **local JPEG file path inside
+  the wallet cache dir** (`cache/cardpersonality_oppo_faces/<sha>_v<n>.jpg`) that holds our export;
+  the wallet's own Glide (StringLoader) loads it reliably. The call is never skipped.
+- Reflection by name; a missing method logs once (`oppo|hook-miss` in OpLog) and changes nothing.
+  `setSvgUrl` sees our `.jpg` path, so its SVG branch is not taken.
+
+### 16.2 Card reporting robustness (why the panel could show no cards)
+- H-C observes 15 candidate model classes (NfcCardDetail, NfcCard, CardDetailRsp, CardDetailRspVo,
+  PayCardInfo, supercard.CardInfo, CarInfo, CardTheme ×2 packages, EntranceCard, UidInfoDTO ×3
+  packages, VerifyIssuerCardRsp, BackupCard) via multi-candidate getters (`getCardImg`,
+  `getNewCardImg`, `getLocalImgPath`, `getCardImageUrl`, `getImgUrl`, `getImageUrl`,
+  `getCardImgUrl`, `getCardFaceUrl`) plus a declared-field fallback (`cardImg`, `newCardImg`,
+  `localImgPath`, `imgUrl`, `imageUrl`, `cardImgUrl`, `cardFaceUrl`).
+- Identity priority: `aid` → `appCode` → `cardNo/cardNum` → `cardId/id/uid`. If no id field can be
+  read, it falls back to **`url:<sha24(faceUrl)>`** identity (type from model class, source stored
+  in the report as `identitySource`) so the panel always receives the card; a native theme change
+  changes that fallback identity (accepted for now).
+- Observed URLs are also local-theme paths (EntranceCard.getLocalImgPath / CardTheme.getCardImg) so
+  native 卡面主题 switches still match.
+
+### 16.3 Diagnostics
+- `ProviderClient.engineStateProvider` is set by the OPPO engine and rides along with every report:
+  `{walletPackage, installed, armed, installedCount, attemptedCount, observedUrls, cardCount,
+  replaceCount, missed[]}` persisted in `files/oppo_engine.json`; panel can read it with provider
+  call `"engine_state"` (Bundle extra `"engine"`) or the same extra on `"getReport"`.
+- OpLog entries: `oppo|init`, `oppo|armed`, `oppo|ha-method`, `oppo|hb-method`, `oppo|hook-miss`,
+  `oppo|url-observed` (masked host+sha, max 20), `oppo|face-applied`, `oppo|local-file-fail`,
+  `oppo|skip-process`, `oppo|refresh`.
+- H-E2: name-prefix hook on `CardCoverSettingUtil#fetchBrightnessUnderTextView*` (its own Glide) —
+  the URL argument is replaced with our local face file so the text white/dark decision matches the
+  custom card (H-E `loadBitmapSync` retained).
+- Still out of scope (fail-open): OPPO EID (`OCSComponentProviderImpl#w6`), desktop Seedling
+  RemoteViews widgets, direct-Bitmap faces; no OPPO device is used for validation (static only).

@@ -310,8 +310,8 @@ private fun StatusCard(
         hookReported -> "模块已连接，未识别到卡片"
         else -> "等待卡片上报"
     }
-    // Item 2: the small status line is now just the detected wallet package name(s).
-    val summary = "识别钱包包名：$walletPackagesText"
+    // Round 12: status line shows only the package name(s), no "识别钱包包名：" prefix.
+    val summary = walletPackagesText
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -657,7 +657,7 @@ private fun EmptyState(
                 color = MiuixTheme.colorScheme.onBackgroundVariant,
             )
             Text(
-                text = "识别钱包包名：$walletPackagesText",
+                text = walletPackagesText,
                 style = MiuixTheme.textStyles.footnote2,
                 color = MiuixTheme.colorScheme.onBackgroundVariant,
             )

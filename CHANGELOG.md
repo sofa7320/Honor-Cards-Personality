@@ -7,6 +7,21 @@
 
 （暂无）
 
+## [0.2.8] - 2026-11-16
+
+> 本轮通过 **Pull Request** 提交，不直接合并 `main`，不发布 GitHub Release。
+
+### 新增
+- **OPPO 引擎诊断**：provider `engine_state` / `getReport.engine` / `files/oppo_engine.json`（walletPackage、installedCount、attemptedCount、observedUrls、cardCount、replaceCount、missed[]），OpLog 记录 OPPO 初始化/hook 安装/URL 观察（脱敏）。
+- **OPPO 卡面入口修正**：按名字反射 hook `CircleNetworkImageView#A0(String)`、`#y0(String,boolean)`、`#x0(String)`、`#setSvgUrl(String)`、`#F0(String)`；URL-only 入口用本地缓存 JPEG 文件路径作为参数（不跳过原调用，Glide 可直接加载本地文件），有 View 的入口保持跳过+自解码 Bitmap。
+- **卡片上报健壮性**：扫描 15 个卡数据类 + 多候选 getter/字段，identity 优先级 aid→appCode→cardNo→cardId/id/uid，兜底 `url:<sha24>`，确保面板能看到 OPPO 卡片。
+- 亮度 hook 补充 `CardCoverSettingUtil#fetchBrightnessUnderTextView*`。
+
+### 修复
+- 关于页：系统侧滑/返回键与顶部箭头均返回软件主页（不再回到桌面）；图标改为真实 launcher 图标；「GitHub 仓库」「发送错误报告」去掉灰色说明小字。
+- 关于页「支持的钱包」：只保留荣耀钱包、欧加钱包两项，仅显示支持版本与包名（不显示本机安装版本），删除「检测到未适配钱包」区块。
+- 首页状态行去掉「识别钱包包名：」前缀，仅显示包名。
+
 ## [0.2.7] - 2026-11-16
 
 > 本轮以 **Pre-release** 发布。
@@ -115,7 +130,8 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
-[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.8...HEAD
+[0.2.8]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.4...v0.2.5
