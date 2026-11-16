@@ -123,8 +123,37 @@ object DiagnosticExporter {
             appendLine("provider getReport（截断）：")
             appendLine(providerCall(ctx, "getReport").take(4000))
             appendLine("OPPO 引擎状态（provider engine_state）：")
+            appendLine("--- OPPO 状态（bridge 为准，v44+）---")
+            val bridge = com.cardpersonality.honor.data.bridge.PanelBridgeServer
+            val bridgeJson = runCatching { bridge.engineStateJson(ctx) }.getOrDefault("{}")
+            val bridgeConnected = runCatching { bridge.isConnected() }.getOrDefault(false)
+            val bridgePort = runCatching { bridge.port() }.getOrDefault(0)
+            val bridgeHelloAt = runCatching { bridge.lastHelloAt() }.getOrDefault(0L)
+            val bridgeHelloProcess = runCatching { bridge.lastHelloProcess() }.getOrDefault("")
+            appendLine(
+                "bridge 状态：isConnected=$bridgeConnected port=$bridgePort " +
+                    "lastHelloAt=$bridgeHelloAt lastHelloProcess=${bridgeHelloProcess.ifEmpty { "（无）" }}",
+            )
+            val bridgeReport = runCatching { bridge.reportJson(ctx) }.getOrDefault("{}")
+            val bridgeCardCount = try {
+                org.json.JSONObject(bridgeReport).optJSONArray("cards")?.length() ?: 0
+            } catch (_: Throwable) {
+                0
+            }
+            appendLine("bridge report 卡片数：$bridgeCardCount")
+            appendLine("bridge processes 原始 JSON：")
+            appendLine(processesJson(bridgeJson).take(4000))
+            appendLine("bridge engine_state 原始 JSON：")
+            appendLine(bridgeJson.take(4000))
+            appendLine()
+            appendLine("--- 旧 provider 字段（历史参考，bridge 为准）---")
             val engineJson = providerCallExtra(ctx, "engine_state", "engine")
             appendLine("OPPO 引擎摘要：" + summarizeEngine(engineJson))
+            appendLine("钱包注入判定：" + injectionVerdict(ctx, engineJson))
+            appendLine("注入进程摘要：" + processSummary(engineJson))
+            appendLine("processes 原始 JSON：")
+            appendLine(processesJson(engineJson).take(4000))
+            appendLine("engine_state 原始 JSON：")
             appendLine(engineJson.take(4000))
             appendLine("OPPO 引擎状态（getReport extra engine，截断）：")
             appendLine(providerCallExtra(ctx, "getReport", "engine").take(2000))
@@ -231,6 +260,84 @@ object DiagnosticExporter {
             if (!json.isNullOrBlank()) json.take(4000) else bundle.keySet().joinToString(", ")
         } catch (t: Throwable) {
             "调用失败：" + (t.message?.take(120) ?: t.javaClass.simpleName)
+        }
+    }
+
+    /** Human summary of engine.processes (per-process injection evidence). */
+    private fun processSummary(json: String): String {
+        return try {
+            val obj = org.json.JSONObject(json)
+            val array = obj.optJSONArray("processes") ?: return "（hook 未提供 processes 字段）"
+            if (array.length() == 0) return "（无进程记录）"
+            buildString {
+                append("共 ${array.length()} 个进程：")
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
+                    val name = item.optString("process")
+                        .ifBlank { item.optString("processName") }
+                        .ifBlank { "未知" }
+                    val main = item.optBoolean(
+                        "isMain",
+                        item.optBoolean("isMainProcess", false),
+                    )
+                    val heartbeatAt = item.optLong(
+                        "lastHookReportAt",
+                        item.optLong("lastHeartbeat", 0L),
+                    )
+                    val age = if (heartbeatAt > 0L) {
+                        (System.currentTimeMillis() - heartbeatAt).coerceAtLeast(0L)
+                    } else {
+                        null
+                    }
+                    append("\n  - $name")
+                    append(if (main) "（主进程）" else "（子进程）")
+                    append(" armed=${item.optBoolean("armed", false)}")
+                    append(" hooks=${item.optInt("installedCount", item.optInt("hooks", 0))}")
+                    append("/${item.optInt("attemptedCount", 0)}")
+                    append(" 心跳=")
+                    append(
+                        when {
+                            age == null -> "无"
+                            age <= 60_000L -> "${age / 1000}s 前"
+                            else -> "${age / 60_000L} 分钟前"
+                        },
+                    )
+                }
+            }
+        } catch (_: Throwable) {
+            "（无法解析 processes）"
+        }
+    }
+
+    /** Exact engine.processes JSON array (or "[]"). */
+    private fun processesJson(json: String): String {
+        return try {
+            val obj = org.json.JSONObject(json)
+            obj.optJSONArray("processes")?.toString() ?: "[]"
+        } catch (_: Throwable) {
+            "[]"
+        }
+    }
+
+    /** "Injected / not injected" verdict for the OPPO wallet process (heartbeat based). */
+    private fun injectionVerdict(ctx: Context, json: String): String {
+        return try {
+            val obj = org.json.JSONObject(json)
+            val cardCount = obj.optInt("cardCount", 0)
+            var heartbeatAt = obj.optLong("lastHookReportAt", 0L)
+            if (heartbeatAt <= 0L) {
+                val file = File(ctx.filesDir, "oppo_engine.json")
+                if (file.isFile) heartbeatAt = file.lastModified()
+            }
+            when {
+                heartbeatAt <= 0L -> "未注入（无引擎心跳）"
+                cardCount > 0 -> "已注入（已有卡片上报）"
+                System.currentTimeMillis() - heartbeatAt <= 10 * 60_000L ->
+                    "已注入（心跳 ${(System.currentTimeMillis() - heartbeatAt) / 1000}s 前，0 卡片）"
+                else -> "未注入（心跳已过期：${(System.currentTimeMillis() - heartbeatAt) / 60_000L} 分钟前）"
+            }
+        } catch (_: Throwable) {
+            "未知（无法解析 engine_state）"
         }
     }
 
@@ -378,6 +485,9 @@ object DiagnosticExporter {
         }
     }
 }
+
+
+
 
 
 

@@ -7,6 +7,19 @@
 
 （暂无）
 
+## [0.2.11] - 2026-11-17
+
+> 本轮以 **Pre-release** 发布；通过 **Pull Request**（stacked）提交，不直接合并 `main`。
+
+### 变更
+- **API 全量迁移到 libxposed API 102**：删除 legacy 入口（`assets/xposed_init`、manifest legacy meta-data）与 `xposed-stub`/`de.robv.android.xposed` 包；hook 兼容层改为内部 `com.cardpersonality.honor.hook.api` 包（内部使用 libxposed API 102）；仅保留 `META-INF/xposed/{module.prop,java_init.list,scope.list}` 现代元数据。
+
+### 修复
+- **OPPO 卡面保存不生效**：面板保存时 wallet 作用域误用荣耀钱包（诊断日志 `wallet=com.hihonor.wallet`）；现按卡片所属钱包（`com.finshell.wallet`）保存，并通过 bridge `CONFIG/PUT/DEL` 推送，钱包侧本地配置命中后以 `file://` 本地卡面替换。
+- **OPPO 占位卡**：「添加卡/添加交通卡/添加门禁卡」等占位项不再作为真实卡片上报/显示。
+- **荣耀自定义/重置后预览丢失**：钱包原生自定义卡面或模块「重置卡面」后，原图快照失效并重新抓取（新增 `refreshOriginal`），预览不再空白。
+- **编辑器**：元素旋转时虚线选择框跟随旋转；自动吸附与拖动冲突导致的「一拽一拽」已修复（拖动中不牵引、松手吸附/滞回）。
+
 ## [0.2.10] - 2026-11-16
 
 > 本轮通过 **Pull Request**（stacked）提交，不直接合并 `main`；以 **Pre-release** 发布。
@@ -165,7 +178,8 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
-[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.10...HEAD
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.11...HEAD
+[0.2.11]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.7...v0.2.8

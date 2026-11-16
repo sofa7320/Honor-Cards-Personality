@@ -13,7 +13,14 @@ import com.cardpersonality.honor.ui.CardPersonalityApp
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Round 18: start the loopback bridge before the first frame so OPPO wallet processes can
+        // connect even if the panel is opened right after a wallet restart.
+        try {
+            com.cardpersonality.honor.data.bridge.PanelBridgeServer.ensureStarted(this)
+        } catch (_: Throwable) {
+        }
         enableEdgeToEdge()
         setContent { CardPersonalityApp() }
     }
 }
+

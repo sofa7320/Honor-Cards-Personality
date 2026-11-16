@@ -22,4 +22,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "CardPersonality"
 include(":app")
-include(":xposed-stub")
+

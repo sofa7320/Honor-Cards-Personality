@@ -1,14 +1,14 @@
 package com.cardpersonality.honor.hook
 
 import android.util.Log
-import de.robv.android.xposed.XposedBridge
+import com.cardpersonality.honor.hook.api.HookBridge
 
 /**
  * Logging helper for the wallet process.
  *
  * Everything is best-effort: a logging failure must never take the wallet down.
  * Lines are written both to logcat (tag CARD_PERSONALITY) and to the LSPosed log
- * (XposedBridge.log) so the verifier can read them without root filtering.
+ * (HookBridge.log) so the verifier can read them without root filtering.
  */
 object HLog {
     const val TAG = "CARD_PERSONALITY"
@@ -22,7 +22,7 @@ object HLog {
         } catch (_: Throwable) {
         }
         try {
-            XposedBridge.log("$TAG $msg")
+            HookBridge.log("$TAG $msg")
         } catch (_: Throwable) {
         }
     }
@@ -33,7 +33,7 @@ object HLog {
         } catch (_: Throwable) {
         }
         try {
-            if (t != null) XposedBridge.log("$TAG WARN $msg :: $t") else XposedBridge.log("$TAG WARN $msg")
+            if (t != null) HookBridge.log("$TAG WARN $msg :: $t") else HookBridge.log("$TAG WARN $msg")
         } catch (_: Throwable) {
         }
     }
@@ -44,7 +44,7 @@ object HLog {
         } catch (_: Throwable) {
         }
         try {
-            if (t != null) XposedBridge.log("$TAG ERROR $msg :: $t") else XposedBridge.log("$TAG ERROR $msg")
+            if (t != null) HookBridge.log("$TAG ERROR $msg :: $t") else HookBridge.log("$TAG ERROR $msg")
         } catch (_: Throwable) {
         }
     }

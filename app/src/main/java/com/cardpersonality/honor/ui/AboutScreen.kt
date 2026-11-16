@@ -71,6 +71,21 @@ fun AboutScreen(
 ) {
     var exporting by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val bridgeConnected = remember {
+        runCatching {
+            com.cardpersonality.honor.data.bridge.PanelBridgeServer.isConnected()
+        }.getOrDefault(false)
+    }
+    val bridgePort = remember {
+        runCatching {
+            com.cardpersonality.honor.data.bridge.PanelBridgeServer.port()
+        }.getOrDefault(0)
+    }
+    val bridgeHelloProcess = remember {
+        runCatching {
+            com.cardpersonality.honor.data.bridge.PanelBridgeServer.lastHelloProcess()
+        }.getOrDefault("")
+    }
     val launcherIcon = rememberLauncherIconBitmap(ctx)
     fun exportDiagnostics() {
         if (exporting) return
@@ -287,8 +302,12 @@ fun AboutScreen(
                             Text(
                                 text = if (exporting) {
                                     "正在收集设备 / Root / LSPosed / 操作记录…"
+                                } else if (bridgeConnected) {
+                                    "OPPO bridge：已连接（端口 $bridgePort，进程 ${bridgeHelloProcess.ifEmpty { "未知" }}）；" +
+                                        "点击导出设备 / Root / LSPosed / 操作记录"
                                 } else {
-                                    "设备、Root、LSPosed、钱包与操作记录 → Download/honor_cards_personality/logs"
+                                    "OPPO bridge：未连接（请打开欧加钱包并确认模块已启用 v44+）；" +
+                                        "点击导出设备 / Root / LSPosed / 操作记录"
                                 },
                                 style = MiuixTheme.textStyles.footnote1,
                                 color = MiuixTheme.colorScheme.onBackgroundVariant,
@@ -499,6 +518,7 @@ private fun rememberLauncherIconBitmap(ctx: Context): ImageBitmap? {
         }.getOrNull()
     }
 }
+
 
 
 

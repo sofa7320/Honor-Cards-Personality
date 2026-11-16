@@ -185,6 +185,11 @@ re-enter hooked getters.
     round-corner-safe replacement via local file path (no direct setImageBitmap), CNIV signature
     fixes, config prewarm, URL normalization + dual identity tables, pair/capture/source
     diagnostics. Stacked PR (feat/round13 ← feat/round12), no tag/Release.
+  - `0.2.10` (v41 local fix, round 15) — OPPO 0-card fix: immediate engine heartbeat, LSPosed
+    recommended `xposedscope` array, recordCard key bug (`Wallets.configKey`), Room DAO
+    enumeration fallback (cards reported without UI navigation), observedModels/reportedCards/
+    skippedNoIdentity/lastHookReportAt/processName/isMainProcess diagnostics. Local-only build
+    (no GitHub push/tag/Release).
   - `0.2.10` — round 14: port of the friend module's OPPO capability — 14 CircleNetworkImageView
     methods + Fin* container setters, `isCardFace` container-ancestor semantics, 11 model getters
     (read-only) with name/type/balance, `file://` replacement into wallet private
@@ -619,3 +624,212 @@ supported types.
   (plus the round-13 `pairCount/captureCount/faceSource`); OpLog adds `oppo|model-hit`,
   `oppo|model-record`, `oppo|file-replace`, `oppo|file-replace-fail`, `oppo|model-record-fail`,
   `oppo|cniv-hooks`, `oppo|config-prewarmed`.
+## 19. Round-15: OPPO "no cards reported" fix (0.2.10, local v41)
+
+User report: the panel detected `com.finshell.wallet` but no card was ever reported. Root causes
+found by code review / RE, and fixes:
+
+1. **LSPosed scope (most likely real cause)** — the module had no `xposedscope` recommendation, so
+   the OPPO wallet was usually not enabled in LSPosed: the engine was never injected, hence no
+   hooks and no reports. Fixed: `<meta-data android:name="xposedscope"
+   android:resource="@array/xposedscope"/>` + `res/values/arrays.xml` listing Honor and all
+   OPPO/欧加 candidate packages. The panel now also guides the user to enable the scope.
+2. **Heartbeat** — `OppoFaceHookEngine.install()` immediately sends a provider heartbeat (even with
+   0 hooks/0 cards) containing `walletPackage/processName/isMainProcess/armed/installedCount/
+   attemptedCount/classLoaderName/lastHookReportAt`. This lets the panel distinguish
+   "LSPosed scope not enabled / not injected" from "injected but no cards observed".
+3. **recordCard key bug** — `recordCard()` used a hardcoded `"oppo|"` prefix instead of the actual
+   wallet package: now `Wallets.configKey(walletPackage, identity.fileKey)` (`<pkg>|<type>:<id>`),
+   matching the provider/panel config-key contract. Report entries keep the real wallet package.
+4. **DAO enumeration fallback (key for 0 cards)** — card reporting previously relied only on the
+   observed model getters, i.e. it required the user to navigate the card lists. Added after-hooks
+   on Room DAO impl classes (`com.nearme.wallet.db.NfcCardRoomDao_Impl`,
+   `NfcCardDao_Impl/NfcCardDetailDao_Impl/…`) for every 0-arg method returning `List`: each element
+   is recorded/reported (identity + name/type/balance + face url) without any UI involvement; a
+   3-second delayed retry covers DAOs created after `install()`. Missing classes only log once.
+5. **Counters** — `engine_state` adds `observedModels`, `reportedCards`, `skippedNoIdentity`,
+   `lastHookReportAt`, `processName`, `isMainProcess`, `classLoaderName`, `heartbeatSent`,
+   `daoHooksInstalled`; OpLog adds `oppo|heartbeat`, `oppo|dao-hooks`.
+6. Friend-module widget strategy kept (14 CircleNetworkImageView methods, `file://` replacement with
+   the wallet-side map); returns never modified; everything main-process + fail-open; Honor
+   `FaceHookEngine` untouched.
+## 20. Round-16: all-process injection + reliable heartbeat (0.2.10, local v42)
+
+User evidence: LSPosed scope for `com.finshell.wallet` enabled and module ON, yet the panel still
+said "欧加钱包进程未注入". Self-audit confirmed **two real bugs**:
+
+1. **Process gate with `return`** — `OppoFaceHookEngine.install()` returned early when
+   `processName != walletPackage`, so any non-default process (e.g. `:main`, or a differently named
+   default process) never installed hooks. Fixed: **no gate / no return** — every process installs
+   the model-getter, CircleNetworkImageView, container, brightness and DAO hooks (classes missing
+   simply record a miss). "Default process" is now `processName == pkg || pkg:main` (empty allowed).
+2. **Heartbeats silently failed without Context** — the old heartbeat ran inside
+   `handleLoadPackage`, where `ProviderClient.appContext()` is usually still `null`, so
+   `engineHeartbeat()` returned early without any evidence. Fixed with a new reliable path:
+   - hook `android.app.Application#onCreate` (after) in every process, take `thisObject` as the
+     Context, and send the heartbeat from there (`engineHeartbeatUsing(ctx, json)` — no appContext
+     dependency);
+   - heartbeat retry ladder 1s/3s/10s/30s until the provider accepts it; failures journaled as
+     `oppo|heartbeat-fail` / success as `oppo|heartbeat-ok`;
+   - the payload is sent **even when 0 classes are found** and always contains
+     `processName/isDefaultProcess/armed/installedCount/attemptedCount/missedCount/classProbes
+     {CircleNetworkImageView,NfcCard,NfcCardRoomDao_Impl,FinBigCardFaceView,CardCoverSettingUtil}/
+     engineVersion/moduleVersion/timestamp` — the only reliable "injected vs not injected" evidence.
+   - `oppo|session` OpLog entry records processName + classProbes at install.
+
+Provider side now merges heartbeats: `engine_heartbeat` stores each process under
+`files/oppo_engine_processes.json` keyed by `processName` (with `lastSeen`), and both the
+`engine_state` provider call and the `getReport` engine extra return the merged JSON:
+`{processes:[{processName,isDefaultProcess,armed,installedCount,attemptedCount,missedCount,
+classProbes,lastSeen,...}], lastHeartbeatProcess, heartbeatSent, ...}` plus the freshest process's
+flat fields for backward compatibility (round-12..15 consumers keep working).
+
+Card reporting (model getters + DAO enumeration) is now attempted in every process, so cards can be
+reported even if the "default process" heuristic is wrong. Honor `FaceHookEngine` untouched; all
+new work is fail-open.
+## 21. Round-17: dual-mode module (legacy + libxposed API 102) — 0.2.10, local v43
+
+User evidence: on LSPosed **2.2.1 (7912) / API 102** the OPPO wallet had the module scope enabled but
+the module was **never injected** (`engine_state={}`, no hook logs, no heartbeat), while the friend
+module implemented with **libxposed API 102** works on the same device. Conclusion: the framework
+loads modern (libxposed) modules; the legacy-only module was effectively ignored. The module now
+supports **both** paths from one APK:
+
+### 21.1 Modern entry (libxposed API 102)
+- Dependency: `io.github.libxposed:api:102.0.0` downloaded from Maven Central, extracted
+  `classes.jar` → `app/libs/libxposed-api-102.jar` (**compileOnly**, never packaged; the framework
+  provides the API classes at runtime).
+- `hook/Xposed102Entry.kt` — `class Xposed102Entry : XposedModule()`:
+  - `onModuleLoaded(param)` → `LibXposedCompat.setModule(this)` + stores `param.processName`;
+  - `onPackageReady(param)` → `XposedDispatch.dispatch(param.packageName, processName, classLoader)`.
+  - API signatures verified with `javap` from the aar:
+    - `XposedModule#hook(Executable): HookBuilder`, `HookBuilder#intercept(Hooker): HookHandle`
+    - `Chain#getThisObject()/getArgs()/proceed()/proceed(Object[])`
+    - `PackageReadyParam#getPackageName()/getClassLoader()/getApplicationInfo()/isFirstPackage()`
+    - `ModuleLoadedParam#isSystemServer()/getProcessName()`
+- Modern metadata (kept alongside legacy metadata):
+  - `app/src/main/resources/META-INF/xposed/module.prop`:
+    `minApiVersion=101`, `targetApiVersion=102`, `staticScope=true`
+  - `META-INF/xposed/java_init.list`: `com.cardpersonality.honor.hook.Xposed102Entry`
+  - `META-INF/xposed/scope.list`: the six wallet candidate packages.
+- Legacy `assets/xposed_init` + manifest `xposedmodule`/`xposedscope`/`<queries>` are still packaged,
+  so old frameworks keep using `XposedEntry`.
+
+### 21.2 Legacy compat shim (packaged de.robv implementation)
+- `xposed-stub` changed from `compileOnly` to `implementation` (its classes are now in the APK) and
+  implements the legacy API for real:
+  - `de.robv.android.xposed.compat.LibXposedCompat` translates
+    `XposedBridge.hookMethod(Member, XC_MethodHook)` into
+    `module.hook(method).intercept(chain -> intercept(callback, chain))`, reconstructing the legacy
+    `MethodHookParam` (`thisObject`, `args`, `result`, `throwable`, return-early via `setResult`) and
+    driving `beforeHookedMethod`/`afterHookedMethod`; `XC_MethodReplacement` is dispatched to
+    `replaceHookedMethod`.
+  - `XposedBridge` (`log`, `hookMethod`, `unhookMethod`, `hookAllMethods/Constructors`,
+    `deoptimizeMethod`), `XposedHelpers` (`findClass/findField/findMethodExact/findAndHookMethod/
+    callMethod/getObjectField/...`), `XC_MethodHook.Unhook`, `AndroidAppHelper` are functional.
+  - The engines (`FaceHookEngine`, `OppoFaceHookEngine`) are unchanged: on a modern framework their
+    legacy calls go through the shim; on a legacy framework the framework's own de.robv classes win
+    (parent classloader first), so the shim is never used there.
+- `XposedEntry.handleLoadPackage` and `Xposed102Entry.onPackageReady` share `XposedDispatch`, which
+  keeps the existing per-wallet engine routing (Honor / OPPO family) and logs
+  `XPOSED102_ALIVE` / `XPOSED102_READY` (modern) or `CARD_PERSONALITY_ALIVE` (legacy).
+
+### 21.3 Validation / known risks
+- Static: APK contains `META-INF/xposed/{module.prop,java_init.list,scope.list}` **and**
+  `assets/xposed_init`; dex contains 22 `de.robv.*` shim classes (22 class descriptors) and
+  **zero** `io.github.libxposed` class definitions (API classes intentionally not packaged);
+  `Xposed102Entry`/`XposedDispatch`/`LibXposedCompat` present; Honor engine/ANR guard untouched.
+- Runtime: two paths cannot both be exercised on one framework. Verifier should check logcat for
+  `XPOSED102_*` (modern path) vs `CARD_PERSONALITY_ALIVE` (legacy path) and run the Honor regression
+  on whichever the device uses; the OPPO user device (LSPosed 2.2/API 102) should now take the
+  modern path and produce engine heartbeats (`processes[]`).
+## 22. Round-18: OPPO IPC over loopback socket bridge (0.2.10, local v44)
+
+Confirmed root cause from the user's LSPosed logs: v43 **was injected** (modern API-102 entry, OPPO
+engine `armed=true hooks=40 proc=com.finshell.wallet:plugin`), but **every ContentProvider IPC
+failed**:
+- non-main wallet processes (`:plugin`, `:temp`, `:icon`) have no Application Context →
+  `PROVIDER_FAIL no app context in wallet process`;
+- the main process cannot resolve our provider at all → `IllegalArgumentException: Unknown
+  authority com.cardpersonality.honor.face` (OPPO wallet targetSdk 36 package visibility does not
+  see our app).
+So cards could not be read, replacements could not be fetched and heartbeats could not be written —
+the panel stayed on "未注入". The friend module works on the same device because it uses a loopback
+TCP bridge, so the OPPO path now does the same.
+
+### 22.1 wallet side: `hook/oppo/OppoBridge.kt`
+- Started from `OppoFaceHookEngine.install()` (no Context/Application required), connects to
+  `127.0.0.1:47131..47133`, reconnects every 2 s rotating ports, never throws into hook code.
+- Line protocol (UTF-8, `\t` separated):
+  - wallet → panel: `HELLO\t<engine JSON>` (install + every 15 s; contains processName/
+    isDefaultProcess/armed/installedCount/attemptedCount/missedCount/classProbes/timestamp),
+    `CARD\t<card JSON>`, `OPLOG\tsource\taction\tdetail`,
+    `ORIGINAL\t<type>\t<id>\t<base64 JPEG>`, `PONG`.
+  - panel → wallet: `CONFIG\t<config JSON>`, `PUT\t<fileKey>\t<version>\t<base64 JPEG>`,
+    `DEL\t<fileKey>`, `REQ_ORIGINAL\t<type>\t<id>`.
+- Local storage (fixed path, same uid, no Context):
+  `/data/user/0/<walletPkg>/files/cardpersonality/{config.json, faces/<sha>_v<n>.jpg,
+  originals/<sha>.jpg}`. CONFIG/PUT/DEL are persisted immediately and update the in-memory face
+  map; CONFIG also triggers a view refresh (bridge config listener).
+
+### 22.2 Replacement and capture are now purely local
+- Hook hit → `OppoBridge.resolveFace(identity)` returns the local file → the String URL argument is
+  replaced with `file:///data/user/0/<pkg>/files/cardpersonality/faces/….jpg` (wallet Glide keeps
+  rounded corners/scaling/cache). No provider/network in the OPPO path.
+- Original-face capture uses a `FaceCapture.Backend` injection: the OPPO engine installs a bridge
+  backend (writes local `originals/<sha>.jpg` + sends `ORIGINAL`), while the Honor engine keeps the
+  default provider backend unchanged.
+- Card reporting sends `CARD` frames; heartbeats send `HELLO` frames. OPPO no longer uses the
+  ContentProvider at all.
+
+### 22.3 panel side: `data/bridge/PanelBridgeServer.kt`
+- `ensureStarted(ctx)` binds `127.0.0.1:47131..47135` (fallback/port rotation), accepts wallet
+  clients, and persists:
+  - HELLO → `files/oppo_engine_processes.json` (merged per process) + OpLog `oppo|heartbeat-ok`;
+  - CARD → existing `report.json` (via `FaceRepository.reportCards`, cards keep name/balance/wallet);
+  - ORIGINAL → `files/originals/<sha>.jpg` (same layout the existing `ensureOriginalFace` reads);
+  - OPLOG → `OpLog`.
+- Push API: `pushConfig`, `pushFace`, `pushFaceDelete`, `requestOriginal`; the pushed snapshot is
+  persisted in `files/bridge_snapshot.json` and **re-sent on every wallet HELLO** (config + all
+  faces), so a reconnecting/restarted wallet always gets the current faces.
+- `FaceRepository.saveCard/clearCard` automatically push CONFIG+PUT/DEL when the target wallet is an
+  OPPO-family package; `FaceProvider.onCreate` starts the server as a fallback and the panel should
+  also call `PanelBridgeServer.ensureStarted(ctx)` at app start (ui-dev one-liner).
+- UI APIs: `reportJson()/engineStateJson()/processes()/originalBytes()/isConnected()/lastHelloAt()/
+  lastHelloProcess()/port()`.
+- Honor wallet keeps the existing ContentProvider path completely unchanged (FaceHookEngine /
+  ProviderClient); only OPPO uses the bridge.
+### 22.4 Round-19 bind fix (v45)
+Verifier found the panel bridge was listening on **IPv6-only** `[::1]` (because
+`ServerSocket(port, backlog, InetAddress.getLoopbackAddress())` resolves to `::1` on the device),
+while the wallet client used the IPv4 literal `127.0.0.1` → "Connection refused". Fixed:
+- panel: `bindLoopback()` binds **127.0.0.1 explicitly** (then `::1` as fallback) for **all five
+  ports 47131..47135**, each accepted on its own thread; `engineStateJson` now includes
+  `bridgePorts` (list) alongside `bridgePort`/`bridgeConnected`;
+- wallet: `OppoBridge.connectLoop()` tries `127.0.0.1` first, then `::1`, across **all five ports
+  47131..47135** (unified with the panel), reconnects every 2 s, and records the successful
+  `bridgeHost`/`bridgePort` in every HELLO frame for diagnostics.
+## 23. Round-19: bridge card delivery robustness (0.2.10, local v46)
+
+User device (v45) proved the bridge connects (`bridgeHost/port` in HELLO from 3 wallet processes,
+main process `armed=true hooks=40/40 observedUrls=8 cardCount=8 recordedModels=24`) but the panel
+still showed **0 cards**, and `classProbes` were all false. Two code-level root causes were fixed:
+
+1. **CARD frames were lost when the panel was not running.** `reportIfDue()` is throttled to 10 s and
+   `OppoBridge.sendCards()` dropped frames while `connected=false`; the wallet usually renders cards
+   before the panel connects, and a later reconnect only sent HELLO. Fixed:
+   - `OppoBridge` keeps a bounded pending queue (`CARD` de-duplicated by `wallet|type:identity`,
+     max 500; `OPLOG` max 200) and **flushes it on every (re)connect**;
+   - on connect it invokes a registered `connectedListener` → engine `forceReportNow()` resets the
+     10 s throttle and sends the complete detected snapshot;
+   - pull protocol: panel sends `REQ_CARDS` after every HELLO, wallet answers immediately with
+     `CARDS\t<full detected JSON array>`, panel merges it into `report.json` and logs
+     `bridge|cards-merge|n=…`;
+   - `reportedCards` is now the number of distinct sent card keys (`sentCards`); HELLO/engine state
+     expose both `sentCards` and `cardCount`.
+2. **`classProbes` were computed with `Class.forName` at heartbeat time**, which returned false even
+   though the hooks were live. They are now derived from the labels of **actually installed hooks**
+   (`cniv:` / `model:` / `container:` / `he:` / `he2:` / `dao:` + `daoHooksInstalled`) and carry
+   `probesSource:"hooks"`, so the panel's injection panel matches reality.
+3. `PanelBridgeServer` exposes `reportVersion()` (incremented on each CARD/CARDS merge; also in
+   `engineStateJson`) so the UI can auto-refresh when the wallet pushes new cards.
