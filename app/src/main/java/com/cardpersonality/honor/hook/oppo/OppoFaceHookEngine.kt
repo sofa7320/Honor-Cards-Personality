@@ -403,8 +403,10 @@ object OppoFaceHookEngine {
             val type = cardTypeOf(card, className) ?: return null
             // Round-25: some OPPO models expose -1/0 placeholders *before* a real card number/AID
             // getter; walk the documented chain and take the first meaningful value.
+            // Round-26: AID/appCode are stable identities; a numeric card number is often a
+            // *duplicate* row of the same transit card, so prefer the letters-based AID first.
             val chain = listOf(
-                "getCardNo", "getAid", "getAppCode", "getBizId",
+                "getAid", "getAppCode", "getCardNo", "getBizId",
                 "getCardId", "getRecordId", "getId",
             )
             var id: String? = null
@@ -559,6 +561,10 @@ object OppoFaceHookEngine {
                     if (captureView != null) {
                         scheduleCapture(captureView, identity, "widget")
                         scheduleViewFaceCapture(captureView, identity, "widget")
+                    } else {
+                        // Round-26: OPPO Fin* containers are self-drawn (not ImageView) — capture
+                        // the rendered container/root view instead, or read its bitmap field.
+                        scheduleRootCapture(hostView ?: (host as? View), identity, "widget-root")
                     }
                 }
             }
@@ -678,6 +684,74 @@ object OppoFaceHookEngine {
      * hook hit, retrying until the drawable actually changes (native custom face / 3rd-party
      * opluscustomizer), then persist locally + report ORIGINAL so the editor preview works.
      */
+    private val rootCaptureMiss = AtomicLong(0L)
+
+    /**
+     * Round-26: capture the currently rendered card face from a self-drawn container (Fin*) or any
+     * root View via draw(Canvas), with a short pre-draw delay; fall back to a Bitmap field.
+     */
+    private fun scheduleRootCapture(view: View?, identity: CardIdentity, source: String) {
+        view ?: return
+        try {
+            if (!OppoBridge.originalNeeded(identity.type, identity.id) &&
+                viewCapturedHash.containsKey(identity.fileKey)
+            ) {
+                return
+            }
+            // 1) self-drawn containers often keep their bitmap in a field — cheapest path
+            reflectBitmapField(view)?.let { bmp ->
+                persistViewCapture(identity, bmp, "$source-field")
+                return
+            }
+            // 2) draw the container/root after the next couple of frames (layout ready)
+            view.postDelayed({
+                try {
+                    val w = view.width
+                    val h = view.height
+                    if (w <= 0 || h <= 0 || !view.isAttachedToWindow) {
+                        val miss = rootCaptureMiss.incrementAndGet()
+                        if (miss <= MAX_URL_LOGS) {
+                            OppoBridge.oplog("oppo", "capture-root-miss", "${identity.id} w=$w h=$h")
+                        }
+                    } else {
+                        val bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                        val canvas = android.graphics.Canvas(bitmap)
+                        view.draw(canvas)
+                        persistViewCapture(identity, bitmap, source)
+                    }
+                } catch (t: Throwable) {
+                    val miss = rootCaptureMiss.incrementAndGet()
+                    if (miss <= MAX_URL_LOGS) {
+                        OppoBridge.oplog("oppo", "capture-root-miss", "${identity.id} ${t.javaClass.simpleName}")
+                    }
+                }
+            }, 48L)
+        } catch (t: Throwable) {
+            OppoBridge.oplog("oppo", "capture-root-miss", t.javaClass.simpleName)
+        }
+    }
+
+    /** Looks for an android.graphics.Bitmap field in the self-drawn container hierarchy. */
+    private fun reflectBitmapField(view: View): android.graphics.Bitmap? {
+        return try {
+            var cls: Class<*>? = view.javaClass
+            var depth = 0
+            while (cls != null && depth < 8) {
+                for (field in cls.declaredFields) {
+                    if (field.type != android.graphics.Bitmap::class.java) continue
+                    field.isAccessible = true
+                    val value = field.get(view) as? android.graphics.Bitmap ?: continue
+                    if (!value.isRecycled && value.width > 0 && value.height > 0) return value
+                }
+                cls = cls.superclass
+                depth++
+            }
+            null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     private fun scheduleViewFaceCapture(view: ImageView?, identity: CardIdentity, source: String) {
         view ?: return
         try {
@@ -1170,11 +1244,48 @@ object OppoFaceHookEngine {
         }
         if (pairCount.get() == 0L) pairCount.incrementAndGet()
         val key = Wallets.configKey(walletPackage, identity.fileKey)
+        val normUrl = dedupeUrl(faceUrl)
+        val normName = name.ifBlank { identity.name }.trim()
+        var duplicateKey: String? = null
+        var duplicate: JSONObject? = null
+        if (normUrl != null) {
+            for ((k, v) in detected) {
+                if (k == key) continue
+                if (v.optString("type") != identity.type) continue
+                val otherUrl = dedupeUrl(v.optString("faceUrl", ""))
+                if (otherUrl != null && otherUrl == normUrl) {
+                    duplicateKey = k
+                    duplicate = v
+                    break
+                }
+            }
+        }
+        if (duplicate != null && duplicateKey != null) {
+            val oldIdentity = duplicate.optString("identity")
+            val keepNew = isAidIdentity(identity.id) && !isAidIdentity(oldIdentity)
+            if (keepNew) {
+                detected.remove(duplicateKey)
+                OppoBridge.oplog("oppo", "dedupe", "keep=${identity.id} drop=$oldIdentity")
+            } else {
+                // merge into the AID-preferred entry and update its current face/name/balance
+                try {
+                    duplicate.put("lastSeen", System.currentTimeMillis())
+                    if (!name.isBlank()) duplicate.put("name", name)
+                    if (faceUrl != null) duplicate.put("faceUrl", faceUrl)
+                    if (balance.isNotBlank()) duplicate.put("balance", balance)
+                    detected[duplicateKey] = duplicate
+                } catch (_: Throwable) {
+                }
+                OppoBridge.oplog("oppo", "dedupe", "keep=$oldIdentity drop=${identity.id}")
+                reportIfDue()
+                return
+            }
+        }
         try {
             val o = JSONObject()
                 .put("type", identity.type)
                 .put("identity", identity.id)
-                .put("name", name.ifBlank { identity.name })
+                .put("name", normName)
                 .put("subtitle", "")
                 .put("lastSeen", System.currentTimeMillis())
                 .put("appElementIds", JSONArray())
@@ -1184,12 +1295,34 @@ object OppoFaceHookEngine {
             if (balance.isNotBlank()) o.put("balance", balance)
             if (faceUrl != null) o.put("faceUrl", faceUrl) else o.put("faceUrl", JSONObject.NULL)
             detected[key] = o
-            // Round-18: engine state is sent over the loopback bridge (HELLO), not the provider.
             reportIfDue()
         } catch (_: Throwable) {
         }
     }
 
+    /** Stable AID-style identity (A0000… / letters+digits), preferred over numeric fallbacks. */
+    private fun isAidIdentity(id: String): Boolean {
+        val v = id.trim().uppercase()
+        if (v.length < 10) return false
+        if (v.startsWith("A0000006")) return true
+        return v.firstOrNull()?.isLetter() == true && v.count { it.isDigit()} >= 6
+    }
+
+    /** URL key for dedupe: decoded, query/fragment stripped, lowercased. */
+    private fun dedupeUrl(raw: String?): String? {
+        val v = raw?.trim().orEmpty()
+        if (v.isEmpty() || v == "null") return null
+        return try {
+            java.net.URLDecoder.decode(v, "UTF-8")
+                .substringBefore('?')
+                .substringBefore('#')
+                .removePrefix("file://")
+                .lowercase()
+                .takeIf { it.isNotBlank() }
+        } catch (_: Throwable) {
+            v.lowercase()
+        }
+    }
     private fun reportIfDue() {
         val now = System.currentTimeMillis()
         val last = lastReportAt.get()
