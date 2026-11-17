@@ -1,16 +1,17 @@
 package com.cardpersonality.honor.data
 
 /**
- * Round-10 multi-wallet storage helpers.
+ * Round-10 multi-wallet storage helpers (round-24: Xiaomi smart card added).
  *
  * Config/report storage uses the legacy `<type>:<identity>` fileKey for the Honor wallet (backward
  * compatible), and a wallet-scoped `"<package>|<type>:<identity>"` key for other wallets (e.g.
- * com.finshell.wallet). The hook resolves the scoped key first and falls back to the legacy key for
- * Honor only.
+ * com.finshell.wallet, com.miui.tsmclient). The hook resolves the scoped key first and falls back to
+ * the legacy key for Honor only.
  */
 object WalletScope {
     const val HONOR = "com.hihonor.wallet"
     const val OPPO = "com.finshell.wallet"
+    const val XIAOMI = "com.miui.tsmclient"
     const val SEPARATOR = "|"
 
     fun normalize(walletPackage: String?): String =
@@ -27,7 +28,15 @@ object WalletScope {
         "com.nearme.wallet",
     )
 
+    /** Xiaomi smart-card candidates (only com.miui.tsmclient is a real package). */
+    val XIAOMI_PACKAGES: Set<String> = setOf(XIAOMI)
+
     fun isOppo(walletPackage: String?): Boolean = normalize(walletPackage) in OPPO_PACKAGES
+
+    fun isXiaomi(walletPackage: String?): Boolean = normalize(walletPackage) in XIAOMI_PACKAGES
+
+    /** Wallets whose faces reach the wallet process over the loopback bridge (no ContentProvider). */
+    fun usesLoopbackBridge(walletPackage: String?): Boolean = isOppo(walletPackage) || isXiaomi(walletPackage)
 
     /** Storage key: Honor keeps the legacy unprefixed key; other wallets get a package prefix. */
     fun configFileKey(key: CardKey, walletPackage: String?): String {
@@ -40,7 +49,7 @@ object WalletScope {
         val idx = fileKey.indexOf(SEPARATOR)
         if (idx <= 0) return HONOR
         val pkg = fileKey.substring(0, idx)
-        return if (pkg == HONOR || pkg in OPPO_PACKAGES) pkg else HONOR
+        return if (pkg == HONOR || pkg in OPPO_PACKAGES || pkg in XIAOMI_PACKAGES) pkg else HONOR
     }
 
     /** Legacy part of a storage key (`<type>:<identity>`). */
@@ -58,12 +67,14 @@ object WalletScope {
         "com.oplus.wallet" -> "OPPO 钱包"
         "com.oneplus.wallet" -> "OnePlus 钱包"
         "com.nearme.wallet" -> "欧加钱包（旧版）"
+        XIAOMI -> "小米智能卡"
         else -> pkg
     }
 
     fun kindOf(walletPackage: String?): String = when (val pkg = normalize(walletPackage)) {
         HONOR -> "honor"
         in OPPO_PACKAGES -> "oppo"
+        in XIAOMI_PACKAGES -> "xiaomi"
         else -> if (pkg.isEmpty()) "unknown" else "unknown"
     }
 }

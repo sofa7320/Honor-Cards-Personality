@@ -29,6 +29,7 @@ data class WalletElementCatalog(
 object WalletPackages {
     const val HONOR = "com.hihonor.wallet"
     const val OPPO = "com.finshell.wallet"
+    const val XIAOMI = "com.miui.tsmclient"
 
     data class InstalledWallet(
         val packageName: String,
@@ -39,11 +40,14 @@ object WalletPackages {
     private val KNOWN = listOf(
         HONOR to "荣耀钱包",
         OPPO to "欧加钱包",
+        XIAOMI to "小米智能卡",
     )
 
     /** Supported wallet versions this release is designed/tested against. */
     const val HONOR_SUPPORTED_VERSION = "11.0.3.305"
     const val OPPO_SUPPORTED_VERSION = "5.52.0"
+    /** Xiaomi support is being adapted; empty = show a placeholder in the About list. */
+    const val XIAOMI_SUPPORTED_VERSION = ""
 
     fun installed(ctx: Context): List<InstalledWallet> {
         val pm = ctx.packageManager
@@ -75,11 +79,13 @@ object WalletPackages {
     fun displayName(packageName: String): String = when (packageName) {
         HONOR -> "荣耀钱包"
         OPPO -> "欧加钱包"
+        XIAOMI -> "小米智能卡"
         else -> packageName
     }
 
     fun catalog(packageName: String): WalletElementCatalog = when (packageName) {
         OPPO -> OPPO_CATALOG
+        XIAOMI -> XIAOMI_CATALOG
         else -> HONOR_CATALOG
     }
 
@@ -214,6 +220,18 @@ object WalletPackages {
         labels = OPPO_LABELS,
         defaultIds = OPPO_SAFE_IDS,
     )
+
+    /**
+     * Xiaomi smart-card wallet: detection/labels only for now (no element ids until the RE pass
+     * certifies safe-to-hide views). Keeps Honor ids from leaking into Xiaomi devices and vice versa.
+     */
+    private val XIAOMI_CATALOG = WalletElementCatalog(
+        packageName = XIAOMI,
+        displayName = "小米智能卡",
+        elementIdsByType = emptyMap(),
+        labels = emptyMap(),
+        defaultIds = emptyList(),
+    )
 }
 
 /** Wallet status as reported by the module's new `wallets` provider call (fallback: PackageManager). */
@@ -276,5 +294,7 @@ object WalletProbe {
         }
     }
 }
+
+
 
 

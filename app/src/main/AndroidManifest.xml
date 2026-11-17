@@ -21,6 +21,7 @@
         <package android:name="com.oplus.wallet" />
         <package android:name="com.oneplus.wallet" />
         <package android:name="com.nearme.wallet" />
+        <package android:name="com.miui.tsmclient" />
     </queries>
 
     <application

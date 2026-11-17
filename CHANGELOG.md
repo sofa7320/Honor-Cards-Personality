@@ -3,7 +3,7 @@
 本文件记录「荣耀卡面工坊」的所有重要变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循语义化版本（`versionCode` 固定为 1，不随版本递增）。
 
-## 0.3.0 预发布系列（0.2.6 – 0.2.12）
+## 0.3.0 预发布系列（0.2.6 – 0.2.13）
 
 > 0.2.6～0.2.12 均为 **0.3.0 的预发布版本**（含 Pre-release 标签）。它们分别引入了多钱包框架、OPPO 静态适配、诊断与 bridge 通信、API 102 迁移、OPPO 保存与荣耀双向卡面等能力。
 > **0.3.0 正式发布时**，将把 0.2.6～0.2.12 的所有变更统一汇总为「自 0.2.5 以来的变更」写入 0.3.0 的发布说明与 CHANGELOG，届时本区间的逐版本条目保留为历史记录。
@@ -11,6 +11,22 @@
 ## [Unreleased]
 
 （暂无）
+
+## [0.2.13] - 2026-11-17
+
+> 本轮以 **Pre-release** 发布；通过 **Pull Request**（base=`main`）提交，不直接推送 `main`。
+
+### 新增
+- **小米智能卡适配**（`com.miui.tsmclient`）：新增小米钱包引擎；Glide 加载入口 hook + dex 扫描定位卡面工厂与 CardInfo 方法；复用 loopback bridge 推送渲染图，钱包侧写入自身私有目录并以 `file://` 替换（无需 root）；卡面几何 320:202 → 960×606。参考 [卡面工坊](https://github.com/MiamBao/cardface-miuix)。
+
+### 修复
+- **荣耀门禁卡卡面（预览丢失/无法替换）**：门禁卡走独立入口 `xi#j`，按 `AccessCard.faceId`（≥1000 / ≤-1000 为原生自定义）与 `cardPicUrl` 决定卡面；ACCESS 的 faceUrl 不再恒为 null，并上报 `nativeFaceKey`；`xi#j` 改为 before hook，按模型字段确定性抓取/替换（不再依赖 ImageView.drawable，避免抓到旧图/占位图）；新增跨进程重抓通道（`RECAPTURE_ORIGINAL`），钱包原生自定义或模块重置后预览可正确刷新。
+- **OPPO 保存链路重构**：由「面板广播、钱包单向接收」改为参考实现的**钱包进程内 ServerSocket**（127.0.0.1:47121–47123，`PING/URLS/PUT/DEL/CLEAR` 请求/响应）+ 面板 `WalletFaceClient`（重试）；按 URL hash 落盘并提供 `resolveFaceByUrl`；新增 `oppo|server-up/put-ok/put-fail/replace-hit/miss` 诊断。
+
+### 变更
+- **软件更名为「药做卡面」**（包名不变）。
+- **README 精简重写**。
+- **开源协议由 Apache-2.0 更换为 GPL-3.0**（LICENSE / NOTICE / CONTRIBUTING 同步）。
 
 ## [0.2.12] - 2026-11-17
 
@@ -191,7 +207,8 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
-[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.12...HEAD
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.13...HEAD
+[0.2.13]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.9...v0.2.10

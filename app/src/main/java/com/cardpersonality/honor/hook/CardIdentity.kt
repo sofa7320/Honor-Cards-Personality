@@ -105,6 +105,12 @@ object CardIdentityExtractor {
                 CardTypes.BANK -> cleanUrl(invokeString(card, "getCardPic"))
                 CardTypes.CAMPUS -> cleanUrl(invokeString(card, "getCardFaceImage"))
                 CardTypes.CARKEY -> cleanUrl(invokeString(card, "getImageSelected"))?.takeUnless { it == "0" }
+                CardTypes.ACCESS -> {
+                    // Round-25: wallet native/custom access face is a remote cardPicUrl; classic
+                    // bundled faces (faceId 0..999) have no URL. faceId is the stable version key.
+                    val faceId = invokeString(card, "getFaceId")?.toLongOrNull()
+                    if (faceId != null && faceId in 0L..999L) null else cleanUrl(invokeString(card, "getCardPicUrl"))
+                }
                 CardTypes.EBIKE -> {
                     val faceId = invokeString(card, "getFaceId")?.toLongOrNull()
                     if (faceId != null && faceId < 1000L) {

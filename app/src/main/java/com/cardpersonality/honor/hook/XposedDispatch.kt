@@ -1,6 +1,7 @@
 package com.cardpersonality.honor.hook
 
 import com.cardpersonality.honor.hook.oppo.OppoFaceHookEngine
+import com.cardpersonality.honor.hook.xiaomi.XiaomiFaceHookEngine
 
 /**
  * Round-22: shared wallet-hook dispatch used by the API-102 module entry.
@@ -24,6 +25,7 @@ internal object XposedDispatch {
                 ProviderClient.logOp("hook", "init", "wallet=${wallet.kind} pkg=$pkg proc=$proc")
                 when (wallet.kind) {
                     Wallets.KIND_HONOR -> FaceHookEngine.install(classLoader)
+                    Wallets.KIND_XIAOMI -> XiaomiFaceHookEngine.install(classLoader, proc, wallet.pkg)
                     else -> OppoFaceHookEngine.install(classLoader, proc, wallet.pkg)
                 }
             } else {

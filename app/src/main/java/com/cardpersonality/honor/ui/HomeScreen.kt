@@ -181,6 +181,7 @@ fun HomeScreen(
     }
 
     val oppoDetected = walletPackagesText.contains(WalletPackages.OPPO)
+    val xiaomiDetected = walletPackagesText.contains(WalletPackages.XIAOMI)
     val oppoNotInjected = oppoDetected && oppoEngineStatus?.injected != true
 
     fun openLsposed() {
@@ -236,7 +237,7 @@ fun HomeScreen(
         topBar = {
             TopAppBar(
                 title = stringResource(R.string.app_name),
-                subtitle = "荣耀钱包 · 自定义卡面",
+                subtitle = "钱包卡面自定义",
                 actions = {
                     IconButton(onClick = { if (!loading) reloadKey++ }) {
                         if (loading) {
@@ -265,6 +266,7 @@ fun HomeScreen(
                     versionName = BuildConfig.VERSION_NAME,
                     oppoStatus = oppoEngineStatus,
                     oppoDetected = oppoDetected,
+                    xiaomiDetected = xiaomiDetected,
                     exportingDiagnostics = exportingDiagnostics,
                     onOpenLsposed = { openLsposed() },
                     onExportDiagnostics = { exportDiagnosticsNow() },
@@ -280,6 +282,7 @@ fun HomeScreen(
                         cardCount = cards.size,
                         walletPackagesText = walletPackagesText,
                         oppoDetected = oppoDetected,
+                        xiaomiDetected = xiaomiDetected,
                         oppoNotInjected = oppoNotInjected,
                         onOpenLsposed = { openLsposed() },
                         onRefresh = { if (!loading) reloadKey++ },
@@ -389,6 +392,7 @@ private fun StatusCard(
     versionName: String,
     oppoStatus: OppoEngineStatus?,
     oppoDetected: Boolean,
+    xiaomiDetected: Boolean,
     exportingDiagnostics: Boolean,
     onOpenLsposed: () -> Unit,
     onExportDiagnostics: () -> Unit,
@@ -559,8 +563,8 @@ private fun StatusCard(
                             Text(
                                 text = "请打开欧加钱包，并确认本模块已启用（v44+）：\n" +
                                     "1. 打开一次欧加钱包的卡包页\n" +
-                                    "2. 打开 LSPosed → 模块 → 荣耀卡面工坊，确认模块已启用且作用域已勾选「欧加钱包」\n" +
-                                    "3. 勾选作用域后需重启手机（或至少强行停止欧加钱包与荣耀卡面工坊后再打开）",
+                                    "2. 打开 LSPosed → 模块 → 药做卡面，确认模块已启用且作用域已勾选「欧加钱包」\n" +
+                                    "3. 勾选作用域后需重启手机（或至少强行停止欧加钱包与药做卡面后再打开）",
                                 style = MiuixTheme.textStyles.footnote1,
                                 color = MiuixTheme.colorScheme.onBackgroundVariant,
                             )
@@ -612,7 +616,7 @@ private fun StatusCard(
                                 style = MiuixTheme.textStyles.body1,
                             )
                             Text(
-                                text = "主进程尚未加载模块：请重启手机（或强行停止欧加钱包与荣耀卡面工坊后重新打开）再试。",
+                                text = "主进程尚未加载模块：请重启手机（或强行停止欧加钱包与药做卡面后重新打开）再试。",
                                 style = MiuixTheme.textStyles.footnote1,
                                 color = MiuixTheme.colorScheme.onBackgroundVariant,
                             )
@@ -660,6 +664,35 @@ private fun StatusCard(
                             )
                         }
                     }
+                }
+            }
+
+            // Round 24: Xiaomi smart-card wallet detected — surface it in the status card even
+            // before its module engine reports cards (the generic package line above may be long).
+            if (xiaomiDetected) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp)
+                        .height(0.5.dp)
+                        .background(MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.2f)),
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text("小米智能卡", style = MiuixTheme.textStyles.body1)
+                    Text(
+                        text = if (cardCount > 0) {
+                            "已检测到小米智能卡；如卡片未显示，请打开小米智能卡后返回本页刷新。"
+                        } else {
+                            "已检测到小米智能卡：请打开小米智能卡后返回本页刷新。"
+                        },
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.onBackgroundVariant,
+                    )
                 }
             }
         }
@@ -944,6 +977,7 @@ private fun EmptyState(
     cardCount: Int,
     walletPackagesText: String,
     oppoDetected: Boolean,
+    xiaomiDetected: Boolean,
     oppoNotInjected: Boolean,
     onOpenLsposed: () -> Unit,
     onRefresh: () -> Unit,
@@ -970,10 +1004,13 @@ private fun EmptyState(
             )
             Text("尚未识别到卡片", style = MiuixTheme.textStyles.subtitle)
             Text(
-                text = if (oppoDetected) {
-                    "打开一次欧加钱包的卡包页/详情页后返回本页刷新；也可以先按卡类型设置默认卡面。"
-                } else {
-                    "打开一次荣耀钱包后返回本页刷新；也可以先按卡类型设置默认卡面。"
+                text = when {
+                    oppoDetected ->
+                        "打开一次欧加钱包的卡包页/详情页后返回本页刷新；也可以先按卡类型设置默认卡面。"
+                    xiaomiDetected ->
+                        "打开一次小米智能卡后返回本页刷新；也可以先按卡类型设置默认卡面。"
+                    else ->
+                        "打开一次荣耀钱包后返回本页刷新；也可以先按卡类型设置默认卡面。"
                 },
                 style = MiuixTheme.textStyles.footnote1,
                 color = MiuixTheme.colorScheme.onBackgroundVariant,
@@ -1041,6 +1078,8 @@ private fun formatTime(millis: Long): String {
         ""
     }
 }
+
+
 
 
 

@@ -10,6 +10,7 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.content.IntentFilter
 import android.database.ContentObserver
+import android.graphics.BitmapFactory
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
@@ -20,6 +21,9 @@ import android.view.ViewGroup
 import android.widget.ImageView
 import com.cardpersonality.honor.data.CardInfo
 import org.json.JSONArray
+import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -66,6 +70,7 @@ object FaceHookEngine {
     private const val CLASS_TRANSIT_CARD = "com.hihonor.wallet.serviceinterface.trafficcard.TransitCard"
 
     private const val ACTION_CONFIG_CHANGED = "com.cardpersonality.honor.CONFIG_CHANGED"
+private const val ACTION_RECAPTURE = "com.cardpersonality.honor.RECAPTURE_ORIGINAL"
     private const val CONFIG_URI = "content://${ProviderClient.AUTHORITY}/config"
 
     /** Detail page adapters: class name -> bind method name (all take (a, int)). */
@@ -100,6 +105,8 @@ object FaceHookEngine {
     @Volatile private var walletClassLoader: ClassLoader? = null
 
     private val detected = ConcurrentHashMap<String, CardInfo>()
+    /** Round-25: last AccessCard object per card (for model-field recapture). */
+    private val accessModels = ConcurrentHashMap<String, WeakReference<Any>>()
     private val lastReportAt = AtomicLong(0L)
     private val bindCount = AtomicLong(0L)
     private val nn0Count = AtomicLong(0L)
@@ -535,6 +542,42 @@ object FaceHookEngine {
 
     // ------------------------------------------------------------------ H5/H6 access + eBike
 
+    /**
+     * Round-25 door-card spec H1: single APK-wide entry `xi#j(ImageView, AccessCard, ...)`.
+     * BEFORE hook:
+     *   - reads AccessCard.faceId / cardPicUrl fields (before the original loads anything);
+     *   - reports the wallet-native face URL for custom/creative faces (faceId >=1000 / <=-1000);
+     *   - with a module face configured: skips the original load and applies our bitmap directly
+     *     (no placeholder flash, no async Glide overwrite);
+     *   - otherwise captures the wallet's current face deterministically from the model
+     *     (classic: f06.a(faceId,0) drawable; custom: download cardPicUrl), not from drawable.
+     */
+    /**
+     * Round-25 door spec H3: the panel deleted the original snapshot / opened the editor; clear the
+     * once-per-process capture guard and re-capture deterministically from the cached model.
+     */
+    private fun handleRecapture(context: Context?, intent: Intent?) {
+        try {
+            val type = intent?.getStringExtra("type").orEmpty()
+            val id = intent?.getStringExtra("id").orEmpty()
+            if (type.isBlank() || id.isBlank()) return
+            FaceCapture.invalidate(type, id)
+            HLog.limWithSummary("recapture_req", 6) { "recapture requested $type:$id" }
+            if (type != com.cardpersonality.honor.data.CardTypes.ACCESS) return
+            val identity = CardIdentity(type, id, "", "")
+            val ref = accessModels[identity.fileKey]
+            val card = ref?.get() ?: return
+            val faceIdText = readFieldString(card, "faceId")
+            val faceId = faceIdText?.toLongOrNull()
+            val url = readFieldString(card, "cardPicUrl")
+            val cl = walletClassLoader ?: return
+            val ctx = context ?: return
+            captureAccessModel(cl, ctx, identity, faceId, url)
+        } catch (t: Throwable) {
+            HLog.lim("recapture_err", 3) { "recapture failed: ${t.javaClass.simpleName}: ${t.message}" }
+        }
+    }
+
     private fun hookAccessFace(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_XI) { m ->
             m.name == "j" && m.parameterTypes.size >= 3 && m.parameterTypes[0] == ImageView::class.java
@@ -544,35 +587,149 @@ object FaceHookEngine {
             return null
         }
         HLog.i("xi#j signature: ${signatureOf(method)}")
-        return HookBridge.hookMethod(method, safeAfter("xi#j") { param ->
-            val args = param.args ?: return@safeAfter
-            val imageView = args.getOrNull(0) as? ImageView ?: return@safeAfter
-            val ctx = (args.getOrNull(2) as? Context) ?: imageView.context
-            if (isExcludedContext(ctx)) {
-                HLog.limWithSummary("xi_skip_custom", 3) { "xi#j skipped on ${ctx.javaClass.simpleName}" }
-                return@safeAfter
-            }
-            val identity = CardIdentityExtractor.of(args.getOrNull(1)) ?: return@safeAfter
-            recordCard(identity)
-            val resolved = ProviderClient.resolve(identity.type, identity.id)
-            if (resolved == null) {
-                FaceCapture.schedule(imageView, identity)
-                HLog.limWithSummary("xi_capture", 4) { "xi#j no config, capturing original ${identity.fileKey}" }
-                return@safeAfter
-            }
-            FaceEnforcer.register(imageView, resolved)
-            FaceImageLoader.load(imageView.context, resolved) { bitmap ->
-                if (bitmap != null) {
-                    FaceEnforcer.applyBitmap(imageView, bitmap)
-                    imageView.invalidate()
+        return HookBridge.hookMethod(method, object : MethodHook() {
+            override fun beforeHookedMethod(param: MethodHook.MethodHookParam?) {
+                if (param == null) return
+                try {
+                    val args = param.args ?: return
+                    val imageView = args.getOrNull(0) as? ImageView ?: return
+                    val card = args.getOrNull(1) ?: return
+                    val ctx = (args.getOrNull(2) as? Context) ?: imageView.context
+                    if (isExcludedContext(ctx)) {
+                        HLog.limWithSummary("xi_skip_custom", 3) { "xi#j skipped on ${ctx.javaClass.simpleName}" }
+                        return
+                    }
+                    val identity = CardIdentityExtractor.of(card) ?: return
+                    val faceIdText = readFieldString(card, "faceId")
+                    val faceId = faceIdText?.toLongOrNull()
+                    val url = readFieldString(card, "cardPicUrl")
+                    val custom = faceId != null && (faceId >= 1000L || faceId <= -1000L)
+                    val reportedUrl = if (custom) url?.takeIf { it.isNotBlank() && it != "null" } else null
+                    accessModels[identity.fileKey] = WeakReference(card)
+                    recordCard(identity, reportedUrl, faceIdText)
+                    HLog.limWithSummary("xi_record", 8) {
+                        "xi#j access ${identity.fileKey} faceId=$faceIdText custom=$custom url=${reportedUrl?.take(60)}"
+                    }
+
+                    val resolved = ProviderClient.resolve(identity.type, identity.id)
+                    if (resolved != null) {
+                        param.setResult(null) // skip original load (void)
+                        FaceEnforcer.register(imageView, resolved)
+                        FaceImageLoader.load(imageView.context, resolved) { bitmap ->
+                            if (bitmap != null) {
+                                FaceEnforcer.applyBitmap(imageView, bitmap)
+                                imageView.invalidate()
+                            }
+                        }
+                        HLog.limWithSummary("xi_replace", 6) {
+                            "xi#j replace ${identity.fileKey} v=${resolved.version} view=${CardIdentityExtractor.viewIdName(imageView)}"
+                        }
+                        return
+                    }
+                    if (FaceCapture.shouldCaptureModel(identity.type, identity.id, faceIdText)) {
+                        HLog.limWithSummary("xi_capture_model", 6) {
+                            "xi#j deterministic capture ${identity.fileKey} faceId=$faceIdText"
+                        }
+                        captureAccessModel(cl, ctx, identity, faceId, url)
+                    }
+                } catch (t: Throwable) {
+                    HLog.lim("xi_before_err", 3) { "xi#j before hook failed: ${t.javaClass.simpleName}: ${t.message}" }
                 }
-            }
-            HLog.limWithSummary("xi_replace", 6) {
-                "xi#j replace ${identity.fileKey} v=${resolved.version} view=${CardIdentityExtractor.viewIdName(imageView)}"
             }
         })
     }
 
+    /** Round-25: deterministic door-face capture from AccessCard model fields (never drawable). */
+    private fun captureAccessModel(cl: ClassLoader, ctx: Context, identity: CardIdentity, faceId: Long?, url: String?) {
+        Thread({
+            var bytes: ByteArray? = null
+            try {
+                val custom = faceId != null && (faceId >= 1000L || faceId <= -1000L)
+                if (custom && !url.isNullOrBlank()) {
+                    bytes = httpGetBytes(url)
+                } else if (faceId != null) {
+                    val resId = resolveFaceRes(cl, faceId)
+                    if (resId != 0) {
+                        val bmp = try {
+                            BitmapFactory.decodeResource(ctx.resources, resId)
+                        } catch (_: Throwable) {
+                            null
+                        }
+                        if (bmp != null) {
+                            val out = ByteArrayOutputStream()
+                            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+                            bmp.recycle()
+                            bytes = out.toByteArray()
+                        }
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+            try {
+                val ok = FaceCapture.saveModelSnapshot(identity.type, identity.id, bytes, faceId?.toString())
+                HLog.limWithSummary("xi_capture_model_ok", 6) {
+                    "xi#j model snapshot ${identity.fileKey} ok=$ok bytes=${bytes?.size ?: 0}"
+                }
+            } catch (_: Throwable) {
+            }
+        }, "cardpersonality-door-capture").apply { isDaemon = true }.start()
+    }
+
+    /** f06.a(faceId, 0) -> bundled classic face resource id (door spec §2.1). */
+    private fun resolveFaceRes(cl: ClassLoader, faceId: Long): Int {
+        return try {
+            val cls = Class.forName("f06", false, cl)
+            val m = cls.getDeclaredMethod("a", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+            m.isAccessible = true
+            (m.invoke(null, faceId.toInt(), 0) as? Int) ?: 0
+        } catch (_: Throwable) {
+            0
+        }
+    }
+
+    private fun httpGetBytes(url: String): ByteArray? {
+        return try {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 8_000
+                readTimeout = 12_000
+                instanceFollowRedirects = true
+                requestMethod = "GET"
+            }
+            try {
+                if (conn.responseCode !in 200..299) return null
+                conn.inputStream.use { it.readBytes() }
+            } finally {
+                conn.disconnect()
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** Reads a private AccessCard field without triggering the (possibly inlined) getter hooks. */
+    private fun readFieldString(card: Any, fieldName: String): String? {
+        return try {
+            var c: Class<*>? = card.javaClass
+            var depth = 0
+            while (c != null && depth < 6) {
+                try {
+                    val f = c.getDeclaredField(fieldName)
+                    f.isAccessible = true
+                    return when (val v = f.get(card)) {
+                        null -> null
+                        is String -> v
+                        else -> v.toString()
+                    }
+                } catch (_: NoSuchFieldException) {
+                }
+                c = c.superclass
+                depth++
+            }
+            null
+        } catch (_: Throwable) {
+            null
+        }
+    }
     private fun hookEbikeFace(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_PI3) { m ->
             m.name == "c" && m.parameterTypes.size >= 3 && m.parameterTypes[0] == ImageView::class.java
@@ -769,7 +926,11 @@ object FaceHookEngine {
     private val refreshReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             try {
-                onConfigChanged()
+                if (intent?.action == ACTION_RECAPTURE) {
+                    handleRecapture(context, intent)
+                } else {
+                    onConfigChanged()
+                }
             } catch (t: Throwable) {
                 HLog.e("CONFIG_CHANGED broadcast handler failed", t)
             }
@@ -785,6 +946,7 @@ object FaceHookEngine {
             // 1) broadcast channel (app sends CONFIG_CHANGED)
             try {
                 val filter = IntentFilter(ACTION_CONFIG_CHANGED)
+                filter.addAction(ACTION_RECAPTURE)
                 if (Build.VERSION.SDK_INT >= 33) {
                     ctx.registerReceiver(refreshReceiver, filter, Context.RECEIVER_EXPORTED)
                 } else {
@@ -1414,7 +1576,7 @@ object FaceHookEngine {
      * Records a detected card. [faceUrl] is only ever supplied by the face-source getter hook
      * (from param.getResult()); bind paths pass null and never invoke face getters.
      */
-    private fun recordCard(identity: CardIdentity, faceUrl: String? = null) {
+    private fun recordCard(identity: CardIdentity, faceUrl: String? = null, nativeFaceKey: String? = null) {
         val previous = detected[identity.fileKey]
         detected[identity.fileKey] = CardInfo(
             key = com.cardpersonality.honor.data.CardKey(identity.type, identity.id),
@@ -1423,6 +1585,7 @@ object FaceHookEngine {
             lastSeen = System.currentTimeMillis(),
             appElementIds = emptyList(),
             faceUrl = faceUrl ?: previous?.faceUrl,
+            nativeFaceKey = nativeFaceKey ?: previous?.nativeFaceKey,
         )
     }
 

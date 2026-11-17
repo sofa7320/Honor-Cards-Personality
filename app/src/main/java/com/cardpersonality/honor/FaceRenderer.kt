@@ -39,10 +39,16 @@ object FaceGeometry {
     /** Wallet package whose card face uses a different aspect/corner radius (欧加钱包). */
     const val OPPO_WALLET_PACKAGE = "com.finshell.wallet"
 
+    /** Xiaomi smart card (小米智能卡): reference-proven 960:606 output (320:202 design units). */
+    const val XIAOMI_WALLET_PACKAGE = "com.miui.tsmclient"
+
     /**
      * Per-wallet card-face geometry (design units + wallet-side corner radius).
-     * Honor: 336:208 (corner 12dp, unchanged); OPPO/欧加: 328:202 (≈960:591, corner 14dp).
-     * The normalized 0..1 sticker coordinates are shared by both, so configs stay compatible.
+     * Honor: 336:208 (corner 12dp, unchanged); OPPO/欧加: 328:202 (≈960:591, corner 14dp);
+     * Xiaomi smart card: 320:202 (exactly 960:606 at 3x, the reference module's proven output size;
+     * the reference bakes a 40px corner radius into the PNG — we keep the rectangular face and let
+     * the wallet clip it, see work/re/xiaomi/XIAOMI-PORT.md "limitations").
+     * The normalized 0..1 sticker coordinates are shared by all wallets, so configs stay compatible.
      */
     data class FaceSpec(
         val designWidth: Float,
@@ -56,9 +62,13 @@ object FaceGeometry {
 
     val HONOR_SPEC = FaceSpec(DESIGN_WIDTH, DESIGN_HEIGHT, 12f, null)
     val OPPO_SPEC = FaceSpec(328f, 202f, 14f, OPPO_WALLET_PACKAGE)
+    val XIAOMI_SPEC = FaceSpec(320f, 202f, 13f, XIAOMI_WALLET_PACKAGE)
 
-    fun specFor(walletPackage: String?): FaceSpec =
-        if (walletPackage == OPPO_WALLET_PACKAGE) OPPO_SPEC else HONOR_SPEC
+    fun specFor(walletPackage: String?): FaceSpec = when (walletPackage) {
+        OPPO_WALLET_PACKAGE -> OPPO_SPEC
+        XIAOMI_WALLET_PACKAGE -> XIAOMI_SPEC
+        else -> HONOR_SPEC
+    }
 
     const val MIN_SCALE = 0.4f
     const val MAX_SCALE = 4f

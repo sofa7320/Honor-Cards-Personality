@@ -86,6 +86,7 @@ object OppoBridge {
     private val urlHitCount = java.util.concurrent.atomic.AtomicLong(0L)
     private val urlMissCount = java.util.concurrent.atomic.AtomicLong(0L)
     private val putOkCount = java.util.concurrent.atomic.AtomicLong(0L)
+    private val putFailCount = java.util.concurrent.atomic.AtomicLong(0L)
     private val configOkCount = java.util.concurrent.atomic.AtomicLong(0L)
 
     // ================================================================ lifecycle
@@ -480,21 +481,92 @@ object OppoBridge {
 
     fun faceFile(identity: CardIdentity): File? = faceFileForRead(identity)
 
-    /** Round-23: exact source-URL lookup (friend-module approach; survives identity mismatch). */
+    /** Round-23/24: exact source-URL lookup (survives identity mismatch).
+     *  Round-24: also checks the deterministic URL-hashed file so a face written by the wallet
+     *  face-server process is visible in every other wallet process (shared app-private dir). */
     fun resolveFaceByUrl(rawUrl: String?): Face? {
         for (alias in urlAliases(rawUrl)) {
-            val file = urlFaces[alias] ?: continue
-            if (file.isFile && file.length() > 0L) {
+            val mapped = urlFaces[alias]
+            if (mapped != null && mapped.isFile && mapped.length() > 0L) {
                 val key = urlFaceKeys[alias] ?: alias
                 val n = urlHitCount.incrementAndGet()
                 if (n <= 20) oplog("oppo", "replace-hit", "url=${(rawUrl ?: "").take(80)}")
-                return Face(key, faceVersions[key] ?: 0, file)
+                return Face(key, faceVersions[key] ?: 0, mapped)
+            }
+            val hashed = urlHashedFile(alias)
+            if (hashed.isFile && hashed.length() > 0L) {
+                urlFaces[alias] = hashed
+                val n = urlHitCount.incrementAndGet()
+                if (n <= 20) oplog("oppo", "replace-hit", "url=${(rawUrl ?: "").take(80)}")
+                return Face(alias, 0, hashed)
             }
         }
         val m = urlMissCount.incrementAndGet()
         if (m <= 20) oplog("oppo", "replace-miss", "url=${(rawUrl ?: "").take(80)}")
         return null
     }
+
+    /** Round-24: wallet face-server PUT path. Stores a deterministic URL-keyed file + registers it. */
+    fun storeFaceForUrl(rawUrl: String, bytes: ByteArray): Boolean {
+        return try {
+            if (rawUrl.isBlank() || bytes.isEmpty()) return false
+            val file = urlHashedFile(rawUrl)
+            file.parentFile?.mkdirs()
+            val tmp = File(file.absolutePath + ".tmp")
+            tmp.writeBytes(bytes)
+            if (!tmp.renameTo(file)) {
+                file.delete()
+                if (!tmp.renameTo(file)) return false
+            }
+            registerUrlFace(rawUrl, file, "url:" + canonicalUrl(rawUrl))
+            val n = putOkCount.incrementAndGet()
+            if (n <= 20) oplog("oppo", "put-ok", "url=${rawUrl.take(80)} bytes=${bytes.size}")
+            HLog.i("OPPO face server: stored url face ${file.name} ${bytes.size}B")
+            true
+        } catch (t: Throwable) {
+            val n = putFailCount.incrementAndGet()
+            if (n <= 20) oplog("oppo", "put-fail", "${rawUrl.take(60)} :: ${t.javaClass.simpleName}")
+            false
+        }
+    }
+
+    fun removeFaceForUrl(rawUrl: String) {
+        try {
+            urlHashedFile(rawUrl).delete()
+            val aliases = urlAliases(rawUrl).toSet()
+            urlFaces.keys.filter { it in aliases }.forEach { urlFaces.remove(it) }
+            urlFaceKeys.keys.filter { it in aliases }.forEach { urlFaceKeys.remove(it) }
+            oplog("oppo", "del-ok", "url=${rawUrl.take(80)}")
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun clearAllFaces() {
+        try {
+            dirFaces().listFiles()?.forEach { it.delete() }
+            faceFiles.clear()
+            faceVersions.clear()
+            urlFaces.clear()
+            urlFaceKeys.clear()
+            oplog("oppo", "clear-ok", "faces cleared")
+            configListener?.invoke()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun canonicalUrl(rawUrl: String): String {
+        return try {
+            java.net.URLDecoder.decode(rawUrl.trim(), "UTF-8")
+                .substringBefore('?')
+                .substringBefore('#')
+                .removePrefix("file://")
+        } catch (_: Throwable) {
+            rawUrl.trim()
+        }
+    }
+
+    private fun urlHashedFile(rawUrl: String): File =
+        File(dirFaces(), "url_" + sha256Hex(canonicalUrl(rawUrl)) + ".jpg")
 
     private fun registerUrlFace(rawUrl: String, file: File, fileKey: String) {
         for (alias in urlAliases(rawUrl)) {

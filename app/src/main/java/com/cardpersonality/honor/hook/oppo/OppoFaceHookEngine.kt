@@ -213,6 +213,7 @@ object OppoFaceHookEngine {
             OppoBridge.setConfigListener { refreshAll() }
             OppoBridge.setConnectedListener { forceReportNow() }
             OppoBridge.setCardSnapshotSupplier { cardsJson() }
+            OppoFaceServer.start { OppoFaceServer.urlsFromCards(cardsJson()) }
             OppoBridge.setOriginalInvalidatedListener { type, id -> FaceCapture.invalidate(type, id) }
             FaceCapture.backend = object : FaceCapture.Backend {
                 override fun snapshotNeeded(type: String, id: String): Boolean =

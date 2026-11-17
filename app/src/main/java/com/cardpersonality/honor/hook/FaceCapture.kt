@@ -65,6 +65,7 @@ object FaceCapture {
     private val forced = ConcurrentHashMap.newKeySet<String>()
 
     private val lastInvalidateAt = ConcurrentHashMap<String, Long>()
+    private val modelNativeKeys = ConcurrentHashMap<String, String>()
     private const val INVALIDATE_DEBOUNCE_MS = 2_000L
 
     /** Invalidates the once-per-process capture guard for one card (reset/native face change). */
@@ -116,6 +117,41 @@ object FaceCapture {
         const val CAMPUS = "campus"
         const val CARKEY = "carkey"
         const val EBIKE = "ebike"
+    }
+
+    /**
+     * Round-25 (door-card spec): deterministic model-field capture path. A capture is needed when
+     * the panel has no snapshot yet OR the wallet-native face version (faceId) changed.
+     */
+    fun shouldCaptureModel(type: String, id: String, nativeFaceKey: String?): Boolean {
+        return try {
+            if (!backend.snapshotNeeded(type, id)) return false
+            val key = "$type:$id"
+            val last = modelNativeKeys[key]
+            nativeFaceKey == null || last != nativeFaceKey || last == null
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /** Saves a snapshot obtained from wallet model fields (not from ImageView.drawable). */
+    fun saveModelSnapshot(type: String, id: String, bytes: ByteArray?, nativeFaceKey: String?): Boolean {
+        if (bytes == null || bytes.isEmpty() || bytes.size > MAX_STORED_BYTES) return false
+        return try {
+            if (!backend.snapshotNeeded(type, id)) return false
+            val ok = backend.save(type, id, bytes)
+            if (ok) {
+                captured["$type:$id"] = System.currentTimeMillis()
+                forced.remove("$type:$id")
+                if (nativeFaceKey != null) modelNativeKeys["$type:$id"] = nativeFaceKey
+                HLog.limWithSummary("capture_model_ok", 8) {
+                    "model snapshot $type:$id faceId=$nativeFaceKey bytes=${bytes.size}"
+                }
+            }
+            ok
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     /**
