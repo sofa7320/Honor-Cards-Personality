@@ -80,6 +80,14 @@ object OppoBridge {
     private val faceFiles = ConcurrentHashMap<String, File>()
     private val faceVersions = ConcurrentHashMap<String, Int>()
 
+    /** Round-23: original wallet face URL -> rendered file (exact source URL matching). */
+    private val urlFaces = ConcurrentHashMap<String, File>()
+    private val urlFaceKeys = ConcurrentHashMap<String, String>()
+    private val urlHitCount = java.util.concurrent.atomic.AtomicLong(0L)
+    private val urlMissCount = java.util.concurrent.atomic.AtomicLong(0L)
+    private val putOkCount = java.util.concurrent.atomic.AtomicLong(0L)
+    private val configOkCount = java.util.concurrent.atomic.AtomicLong(0L)
+
     // ================================================================ lifecycle
 
     fun start(walletPackage: String, stateSupplier: () -> String) {
@@ -187,7 +195,7 @@ object OppoBridge {
     // ================================================================ downstream commands
 
     private fun handleDownstream(line: String) {
-        val parts = line.split('\t', limit = 4)
+        val parts = line.split('\t', limit = 5)
         when (parts[0]) {
             "CONFIG" -> {
                 if (parts.size >= 2) {
@@ -196,7 +204,8 @@ object OppoBridge {
             }
             "PUT" -> {
                 if (parts.size >= 4) {
-                    onPut(parts[1], parts[2].toIntOrNull() ?: 0, decode(parts[3]))
+                    val faceUrl = if (parts.size >= 5) decode(parts[4])?.toString(Charsets.UTF_8) else null
+                    onPut(parts[1], parts[2].toIntOrNull() ?: 0, decode(parts[3]), faceUrl)
                 }
             }
             "DEL" -> {
@@ -226,6 +235,9 @@ object OppoBridge {
         try {
             configJson = json
             faceVersions.clear()
+            urlFaces.clear()
+            urlFaceKeys.clear()
+            logConfigOk()
             val obj = JSONObject(json)
             obj.optJSONObject("cards")?.let { cards ->
                 for (key in cards.keys()) {
@@ -244,7 +256,7 @@ object OppoBridge {
         }
     }
 
-    private fun onPut(fileKey: String, version: Int, bytes: ByteArray?) {
+    private fun onPut(fileKey: String, version: Int, bytes: ByteArray?, faceUrl: String? = null) {
         if (bytes == null || bytes.isEmpty()) return
         try {
             val file = faceFileForWrite(fileKey, version)
@@ -257,6 +269,8 @@ object OppoBridge {
             }
             faceFiles[fileKey] = file
             faceVersions[fileKey] = version
+            if (!faceUrl.isNullOrBlank()) registerUrlFace(faceUrl, file, fileKey)
+            logPutOk(fileKey, faceUrl)
             HLog.i("OPPO bridge: face stored $fileKey v=$version ${bytes.size}B")
             configListener?.invoke()
         } catch (_: Throwable) {
@@ -271,6 +285,14 @@ object OppoBridge {
             }
             faceFiles.remove(fileKey)
             faceVersions.remove(fileKey)
+            val iter = urlFaces.entries.iterator()
+            while (iter.hasNext()) {
+                val entry = iter.next()
+                if (urlFaceKeys[entry.key] == fileKey) {
+                    urlFaceKeys.remove(entry.key)
+                    iter.remove()
+                }
+            }
             configListener?.invoke()
         } catch (_: Throwable) {
         }
@@ -457,6 +479,63 @@ object OppoBridge {
     }
 
     fun faceFile(identity: CardIdentity): File? = faceFileForRead(identity)
+
+    /** Round-23: exact source-URL lookup (friend-module approach; survives identity mismatch). */
+    fun resolveFaceByUrl(rawUrl: String?): Face? {
+        for (alias in urlAliases(rawUrl)) {
+            val file = urlFaces[alias] ?: continue
+            if (file.isFile && file.length() > 0L) {
+                val key = urlFaceKeys[alias] ?: alias
+                val n = urlHitCount.incrementAndGet()
+                if (n <= 20) oplog("oppo", "replace-hit", "url=${(rawUrl ?: "").take(80)}")
+                return Face(key, faceVersions[key] ?: 0, file)
+            }
+        }
+        val m = urlMissCount.incrementAndGet()
+        if (m <= 20) oplog("oppo", "replace-miss", "url=${(rawUrl ?: "").take(80)}")
+        return null
+    }
+
+    private fun registerUrlFace(rawUrl: String, file: File, fileKey: String) {
+        for (alias in urlAliases(rawUrl)) {
+            urlFaces[alias] = file
+            urlFaceKeys[alias] = fileKey
+        }
+    }
+
+    /** Normalized aliases: raw, URL-decoded, query/fragment stripped, scheme-stripped, basename. */
+    private fun urlAliases(rawUrl: String?): List<String> {
+        if (rawUrl.isNullOrBlank()) return emptyList()
+        val out = LinkedHashSet<String>()
+        val decoded = try {
+            java.net.URLDecoder.decode(rawUrl.trim(), "UTF-8")
+        } catch (_: Throwable) {
+            rawUrl.trim()
+        }
+        fun addVariants(v: String) {
+            if (v.isBlank()) return
+            out.add(v)
+            val noQuery = v.substringBefore('?').substringBefore('#')
+            out.add(noQuery)
+            out.add(noQuery.removePrefix("file://"))
+            out.add(noQuery.removePrefix("https://").removePrefix("http://"))
+            out.add(noQuery.substringAfterLast('/'))
+        }
+        addVariants(rawUrl.trim())
+        addVariants(decoded)
+        out.add(decoded.substringBefore('?').substringBefore('#'))
+        return out.filter { it.isNotBlank() }
+    }
+
+    private fun logPutOk(fileKey: String, faceUrl: String?) {
+        val n = putOkCount.incrementAndGet()
+        if (n <= 20) oplog("oppo", "put-ok", "$fileKey url=${(faceUrl ?: "").take(60)}")
+    }
+
+    private fun logConfigOk() {
+        val n = configOkCount.incrementAndGet()
+        if (n <= 20) oplog("oppo", "config-ok", "urls=${urlFaces.size}")
+    }
 
     private fun faceFileForRead(identity: CardIdentity): File? {
         for (key in candidateKeys(identity.type, identity.id)) {

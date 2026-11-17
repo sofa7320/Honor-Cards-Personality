@@ -64,13 +64,40 @@ object FaceCapture {
     /** Round-22: keys that must be re-captured after a reset / wallet face change. */
     private val forced = ConcurrentHashMap.newKeySet<String>()
 
+    private val lastInvalidateAt = ConcurrentHashMap<String, Long>()
+    private const val INVALIDATE_DEBOUNCE_MS = 2_000L
+
     /** Invalidates the once-per-process capture guard for one card (reset/native face change). */
     fun invalidate(type: String, id: String) {
         try {
             val key = if (id.isBlank()) type else "$type:$id"
+            val now = System.currentTimeMillis()
+            val last = lastInvalidateAt[key] ?: 0L
+            lastInvalidateAt[key] = now
             forced.add(key)
             captured.remove(key)
-            HLog.i("original capture invalidated $key")
+            if (now - last >= INVALIDATE_DEBOUNCE_MS) {
+                HLog.i("original capture invalidated $key")
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Round-23: editor open / back-to-panel — re-capture the current wallet face (incl. native). */
+    fun requestCapture(type: String, id: String) {
+        invalidate(type, id)
+    }
+
+    /** Config change (config cleared / face changed): allow every registered card to re-capture. */
+    fun invalidateAll() {
+        try {
+            val now = System.currentTimeMillis()
+            val lastAll = lastInvalidateAt["*"] ?: 0L
+            if (now - lastAll < INVALIDATE_DEBOUNCE_MS) return
+            lastInvalidateAt["*"] = now
+            forced.addAll(captured.keys)
+            captured.clear()
+            HLog.i("original capture invalidated for all cards")
         } catch (_: Throwable) {
         }
     }

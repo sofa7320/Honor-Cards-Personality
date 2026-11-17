@@ -131,6 +131,8 @@ data class EditorTarget(
     val appElementIds: List<String> = emptyList(),
     /** Wallet package this card was detected in (null = infer from installed wallets). */
     val walletPackage: String? = null,
+    /** Wallet's original face URL/path for this card (round 23: OPPO bridge URL fallback). */
+    val faceUrl: String? = null,
 )
 
 /** Which colour of which sticker the colour picker dialog is editing. */
@@ -246,6 +248,21 @@ fun EditorScreen(
     var colorPickerRequest by remember { mutableStateOf<ColorPickerRequest?>(null) }
     var tabAnimInitialised by remember { mutableStateOf(false) }
 
+    // Round 23: wallet-native custom faces (e.g. Honor access cards) must show up in the panel
+    // immediately. On editor open, invalidate + re-capture the wallet-original snapshot for cards
+    // the panel has not customized (2 s debounce lives in OriginalSnapshotRefresh).
+    LaunchedEffect(target.key, target.walletPackage) {
+        if (!hasStoredCustomFace) {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    com.cardpersonality.honor.ui.util.OriginalSnapshotRefresh.refreshIfNeeded(
+                        ctx, target.key.type, target.key.id,
+                    )
+                }
+            }
+        }
+    }
+
     /** Persist the auto-snap toggle (app-level setting, not part of the card config). */
     fun setSnapEnabled(value: Boolean) {
         if (snapEnabled == value) return
@@ -319,6 +336,12 @@ fun EditorScreen(
         scope.launch {
             withContext(Dispatchers.IO) {
                 runCatching { FaceRepository.saveCard(ctx, target.key, cfg, target.walletPackage) }
+                // Round 23: explicit OPPO URL-fallback PUT using the card's reported faceUrl.
+                runCatching {
+                    com.cardpersonality.honor.ui.util.OppoFaceUrlPush.push(
+                        ctx, target.key, target.walletPackage, target.faceUrl,
+                    )
+                }
             }
             saving = false
             showExitDialog = false
@@ -485,6 +508,9 @@ fun EditorScreen(
                     runCatching {
                         withContext(Dispatchers.IO) {
                             FaceRepository.saveCard(ctx, target.key, imported, target.walletPackage)
+                            com.cardpersonality.honor.ui.util.OppoFaceUrlPush.push(
+                                ctx, target.key, target.walletPackage, target.faceUrl,
+                            )
                             FaceRepository.notifyWalletConfigChanged(ctx)
                         }
                     }
@@ -2395,6 +2421,8 @@ private fun List<StickerSpec>.move(from: Int, to: Int): List<StickerSpec> {
     list.add(to, item)
     return list
 }
+
+
 
 
 

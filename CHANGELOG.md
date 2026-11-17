@@ -3,9 +3,22 @@
 本文件记录「荣耀卡面工坊」的所有重要变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循语义化版本（`versionCode` 固定为 1，不随版本递增）。
 
+## 0.3.0 预发布系列（0.2.6 – 0.2.12）
+
+> 0.2.6～0.2.12 均为 **0.3.0 的预发布版本**（含 Pre-release 标签）。它们分别引入了多钱包框架、OPPO 静态适配、诊断与 bridge 通信、API 102 迁移、OPPO 保存与荣耀双向卡面等能力。
+> **0.3.0 正式发布时**，将把 0.2.6～0.2.12 的所有变更统一汇总为「自 0.2.5 以来的变更」写入 0.3.0 的发布说明与 CHANGELOG，届时本区间的逐版本条目保留为历史记录。
+
 ## [Unreleased]
 
 （暂无）
+
+## [0.2.12] - 2026-11-17
+
+> 本轮以 **Pre-release** 发布；通过 **Pull Request**（stacked）提交，不直接合并 `main`。
+
+### 修复
+- **OPPO 卡面保存不生效（第二轮）**：钱包渲染时使用的卡片 identity 可能与面板保存时不一致，导致替换始终未命中。新增**原始卡面 URL 精确匹配兜底**：bridge `PUT` 增加 `faceUrl`（Base64 第 5 段），钱包维护 URL→本地卡面映射（去 query/scheme/basename 别名），identity 未命中时按 URL 命中替换为 `file://`；新增 `oppo|put-ok/config-ok/replace-hit/replace-miss` 诊断日志。
+- **荣耀门禁卡「双向保存」预览**：进入编辑器或从钱包返回面板时，对未自定义卡面的卡去抖重新抓取钱包当前卡面（包含钱包原生自定义的门禁卡卡面）；重置后恢复钱包原生卡面且不覆盖钱包自身文件。`FaceCapture` 增加失效/重抓/全量失效（2s 去抖）。
 
 ## [0.2.11] - 2026-11-17
 
@@ -178,7 +191,8 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
-[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.11...HEAD
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.12...HEAD
+[0.2.12]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.8...v0.2.9
