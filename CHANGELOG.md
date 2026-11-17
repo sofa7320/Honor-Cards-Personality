@@ -272,7 +272,9 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
-[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.18...HEAD
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.20...HEAD
+[0.2.20]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.19...v0.2.20
+[0.2.19]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.18...v0.2.19
 [0.2.18]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.17...v0.2.18
 [0.2.17]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.16...v0.2.17
 [0.2.16]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.15...v0.2.16
