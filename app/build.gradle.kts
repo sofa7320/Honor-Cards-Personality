@@ -23,11 +23,7 @@ android {
         //  - versionCode is permanently pinned to 1 (never auto-incremented; no script bumps it).
         //  - versionName is semantic and user-visible (shown in-app) — bump per release.
         versionCode = 1
-<<<<<<< Updated upstream
-        versionName = "0.2.17"
-=======
         versionName = "0.2.19"
->>>>>>> Stashed changes
     }
 
     buildFeatures {
