@@ -278,7 +278,7 @@ object PanelBridgeServer {
         broadcast("CONFIG\t$configJson")
     }
 
-    fun pushFace(ctx: Context, fileKey: String, version: Int, jpeg: ByteArray) {
+    fun pushFace(ctx: Context, fileKey: String, version: Int, jpeg: ByteArray, faceUrl: String? = null) {
         val snapshot = readSnapshot(ctx)
         val faces = snapshot.optJSONObject("faces") ?: JSONObject().also { snapshot.put("faces", it) }
         faces.put(
@@ -286,10 +286,12 @@ object PanelBridgeServer {
             JSONObject()
                 .put("version", version)
                 .put("bytes", jpeg.size)
-                .put("encoded", encode(jpeg)),
+                .put("encoded", encode(jpeg))
+                .put("faceUrl", faceUrl ?: ""),
         )
         writeFileAtomically(File(ctx.filesDir, SNAPSHOT_FILE), snapshot.toString())
-        broadcast("PUT\t$fileKey\t$version\t${encode(jpeg)}")
+        val urlSegment = encode((faceUrl ?: "").toByteArray(Charsets.UTF_8))
+        broadcast("PUT\t$fileKey\t$version\t${encode(jpeg)}\t$urlSegment")
     }
 
     fun pushFaceDelete(ctx: Context, fileKey: String) {
@@ -322,7 +324,8 @@ object PanelBridgeServer {
                 val entry = faces.optJSONObject(key) ?: continue
                 val encoded = entry.optString("encoded", "")
                 if (encoded.isEmpty()) continue
-                sendTo(client, "PUT\t$key\t${entry.optInt("version", 0)}\t$encoded")
+                val urlSegment = encode(entry.optString("faceUrl", "").toByteArray(Charsets.UTF_8))
+                sendTo(client, "PUT\t$key\t${entry.optInt("version", 0)}\t$encoded\t$urlSegment")
             }
         }
     }
