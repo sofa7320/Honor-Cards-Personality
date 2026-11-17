@@ -838,10 +838,17 @@ private fun CardFaceRowThumbnail(
     ) {
         value = withContext(Dispatchers.IO) {
             val wallet = card.walletPackage.takeIf { it.isNotBlank() }
-            val file = if (cfg.hasCustomFace) {
+            var file = if (cfg.hasCustomFace) {
                 FaceRepository.exportFileFor(ctx, card.type, card.key.id, wallet)
             } else {
                 FaceRepository.ensureOriginalFace(ctx, card)
+            }
+            if (file == null && !card.faceUrl.isNullOrBlank()) {
+                // Round 26: OPPO cards often have no local original but do report a faceUrl —
+                // download it (deduplicated / 2 s debounced) so the list shows the wallet face.
+                file = com.cardpersonality.honor.ui.util.FaceUrlFallback.ensureDownloaded(
+                    ctx, card.type, card.key.id, card.faceUrl,
+                )
             }
             file?.let { file ->
                 // Cache key must follow the card key + config version: evict the old decode so a
@@ -1059,6 +1066,7 @@ private fun formatTime(millis: Long): String {
         ""
     }
 }
+
 
 
 
