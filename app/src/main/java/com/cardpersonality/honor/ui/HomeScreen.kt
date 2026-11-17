@@ -100,6 +100,8 @@ fun HomeScreen(
     onSnapshot: (HomeSnapshot) -> Unit = {},
     listState: androidx.compose.foundation.lazy.LazyListState =
         androidx.compose.foundation.lazy.rememberLazyListState(),
+    /** Round 31: pause automatic refresh/thumbnail work while a navigation transition runs. */
+    allowAutoRefresh: Boolean = true,
 ) {
     var cards by remember { mutableStateOf(initialSnapshot?.cards ?: emptyList()) }
     var reloadKey by remember { mutableIntStateOf(0) }
@@ -139,7 +141,8 @@ fun HomeScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    LaunchedEffect(reloadKey) {
+    LaunchedEffect(reloadKey, allowAutoRefresh) {
+        if (!allowAutoRefresh) return@LaunchedEffect
         // Round 28: returning from the editor reuses the retained snapshot and refreshes silently
         // (no full-page loading / list rebuild); only the manual refresh button shows a spinner.
         if (!hasLoadedOnce || manualRefresh) loading = true
@@ -1084,6 +1087,7 @@ private fun formatTime(millis: Long): String {
         ""
     }
 }
+
 
 
 

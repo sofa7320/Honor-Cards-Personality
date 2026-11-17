@@ -23,7 +23,7 @@ android {
         //  - versionCode is permanently pinned to 1 (never auto-incremented; no script bumps it).
         //  - versionName is semantic and user-visible (shown in-app) — bump per release.
         versionCode = 1
-        versionName = "0.2.18"
+        versionName = "0.2.20"
     }
 
     buildFeatures {
