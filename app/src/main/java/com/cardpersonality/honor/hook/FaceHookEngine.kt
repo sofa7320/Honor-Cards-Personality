@@ -1,4 +1,7 @@
 package com.cardpersonality.honor.hook
+import com.cardpersonality.honor.hook.api.HookBridge
+import com.cardpersonality.honor.hook.api.HookHelpers
+import com.cardpersonality.honor.hook.api.MethodHook
 
 import android.app.Activity
 import android.content.BroadcastReceiver
@@ -16,9 +19,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import com.cardpersonality.honor.data.CardInfo
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
 import org.json.JSONArray
 import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
@@ -95,7 +95,7 @@ object FaceHookEngine {
         "label_layout_ble", "iv_tag_ble", "tv_card_label_ble",
     )
 
-    private val handles = CopyOnWriteArrayList<XC_MethodHook.Unhook>()
+    private val handles = CopyOnWriteArrayList<MethodHook.Unhook>()
     @Volatile private var installed = false
     @Volatile private var walletClassLoader: ClassLoader? = null
 
@@ -191,6 +191,12 @@ object FaceHookEngine {
                 ProviderClient.prefetchAsync() // background IPC only (ANR fix v14)
                 // Cold-start: when config finally arrives, finish any pending face applications.
                 ProviderClient.addConfigListener {
+            // Round-23: after a reset / native custom-face change the cached original snapshot must
+            // be refreshed so the panel preview shows the wallet's current face.
+            try {
+                FaceCapture.invalidateAll()
+            } catch (_: Throwable) {
+            }
                     try {
                         retryPendingFaces()
                     } catch (_: Throwable) {
@@ -207,7 +213,7 @@ object FaceHookEngine {
 
     // ------------------------------------------------------------------ H1 nn0#p (record only)
 
-    private fun hookFaceChokePoint(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookFaceChokePoint(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_NN0) { m ->
             m.name == "p" && m.parameterTypes.size == 4 &&
                 m.parameterTypes[0] == ImageView::class.java &&
@@ -218,7 +224,7 @@ object FaceHookEngine {
             return null
         }
         HLog.i("nn0#p signature: ${signatureOf(method)}")
-        return XposedBridge.hookMethod(method, object : XC_MethodHook() {
+        return HookBridge.hookMethod(method, object : MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam?) {
                 if (param == null) return
                 try {
@@ -240,7 +246,7 @@ object FaceHookEngine {
     }
 
     /** H1 PRE: record only — never modify args, never skip the wallet's own load. */
-    private fun onFaceChokePointPre(param: XC_MethodHook.MethodHookParam) {
+    private fun onFaceChokePointPre(param: MethodHook.MethodHookParam) {
         val args = param.args ?: return
         val imageView = args.getOrNull(0) as? ImageView
         val source = args.getOrNull(1) as? String
@@ -276,7 +282,7 @@ object FaceHookEngine {
         }
     }
 
-    private fun onFaceChokePointPost(param: XC_MethodHook.MethodHookParam) {
+    private fun onFaceChokePointPost(param: MethodHook.MethodHookParam) {
         val n = nn0Count.incrementAndGet()
         try {
             currentCard.remove()
@@ -287,7 +293,7 @@ object FaceHookEngine {
 
     // ------------------------------------------------------------------ H2 nh5#c (replacement)
 
-    private fun hookGlideWrapper(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookGlideWrapper(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_NH5) { m ->
             m.name == "c" && m.parameterTypes.size >= 4 &&
                 m.parameterTypes[0] == ImageView::class.java &&
@@ -298,7 +304,7 @@ object FaceHookEngine {
             return null
         }
         HLog.i("nh5#c signature: ${signatureOf(method)}")
-        return XposedBridge.hookMethod(method, object : XC_MethodHook() {
+        return HookBridge.hookMethod(method, object : MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam?) {
                 if (param == null) return
                 if (nh5Reentrant.get() == true) return // our own re-invocation
@@ -316,7 +322,7 @@ object FaceHookEngine {
      * content:// Uri and re-invoke the exact same method (all other args untouched), so the
      * wallet's placeholder/transform/listener/callback chain stays identical.
      */
-    private fun substituteGlideSource(param: XC_MethodHook.MethodHookParam) {
+    private fun substituteGlideSource(param: MethodHook.MethodHookParam) {
         val args = param.args ?: return
         val imageView = args.getOrNull(0) as? ImageView ?: return
         val ctx = args.getOrNull(1) as? Context ?: imageView.context
@@ -375,7 +381,7 @@ object FaceHookEngine {
 
     // ------------------------------------------------------------------ H3 mv1#a (source helper)
 
-    private fun hookCardImageSource(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookCardImageSource(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_MV1) { m ->
             m.name == "a" && m.parameterTypes.size == 1 && !m.parameterTypes[0].isPrimitive &&
                 m.returnType == Any::class.java
@@ -385,7 +391,7 @@ object FaceHookEngine {
             return null
         }
         HLog.i("mv1#a signature: ${signatureOf(method)}")
-        return XposedBridge.hookMethod(method, safeAfter("mv1#a") { param ->
+        return HookBridge.hookMethod(method, safeAfter("mv1#a") { param ->
             val identity = CardIdentityExtractor.of(param.args?.getOrNull(0)) ?: return@safeAfter
             val resolved = ProviderClient.resolve(identity.type, identity.id) ?: return@safeAfter
             // re-cards correction: mv1#a must return an android.net.Uri so the hv1 preload key
@@ -404,7 +410,7 @@ object FaceHookEngine {
      * after a config change, force a cache miss for keys carrying our authority so a stale
      * preloaded bitmap cannot win; the normal path then goes nh5 -> H2 -> our URI.
      */
-    private fun hookPreloadCache(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookPreloadCache(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_HV1) { m ->
             m.name == "a" && m.parameterTypes.size == 1 && m.parameterTypes[0] == String::class.java
         } ?: run {
@@ -413,7 +419,7 @@ object FaceHookEngine {
             return null
         }
         HLog.i("hv1#a signature: ${signatureOf(method)}")
-        return XposedBridge.hookMethod(method, object : XC_MethodHook() {
+        return HookBridge.hookMethod(method, object : MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam?) {
                 try {
                     if (param == null) return
@@ -431,7 +437,7 @@ object FaceHookEngine {
     }
     // ------------------------------------------------------------------ swipe/home surfaces
 
-    private fun hookAdapterBind(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookAdapterBind(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_Z79) { m ->
             m.name == "d" && m.parameterTypes.size == 4 &&
                 m.parameterTypes[1] == Int::class.javaPrimitiveType &&
@@ -443,7 +449,7 @@ object FaceHookEngine {
             return null
         }
         HLog.i("z79#d signature: ${signatureOf(method)}")
-        return XposedBridge.hookMethod(method, safeAfter("z79#d") { param ->
+        return HookBridge.hookMethod(method, safeAfter("z79#d") { param ->
             val bind = bindCount.incrementAndGet()
             val holder = param.args?.getOrNull(0) ?: return@safeAfter
             val root = viewRootOf(holder)
@@ -456,7 +462,7 @@ object FaceHookEngine {
         })
     }
 
-    private fun hookAdapterDataSet(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookAdapterDataSet(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_Z79) { m ->
             m.name == "f" && m.parameterTypes.size == 1 &&
                 java.util.List::class.java.isAssignableFrom(m.parameterTypes[0])
@@ -465,7 +471,7 @@ object FaceHookEngine {
             dumpMethods(cl, CLASS_Z79, "f")
             return null
         }
-        return XposedBridge.hookMethod(method, safeAfter("z79#f") { param ->
+        return HookBridge.hookMethod(method, safeAfter("z79#f") { param ->
             val list = param.args?.getOrNull(0) as? Collection<*> ?: return@safeAfter
             val identities = ArrayList<CardIdentity>()
             for (item in list) {
@@ -481,7 +487,7 @@ object FaceHookEngine {
         })
     }
 
-    private fun hookHomeCardBuilder(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookHomeCardBuilder(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_LA8) { m ->
             m.name == "a" && m.parameterTypes.size == 4 &&
                 m.parameterTypes[0] == Context::class.java &&
@@ -494,7 +500,7 @@ object FaceHookEngine {
             return null
         }
         HLog.i("la8#a signature: ${signatureOf(method)}")
-        return XposedBridge.hookMethod(method, safeAfter("la8#a") { param ->
+        return HookBridge.hookMethod(method, safeAfter("la8#a") { param ->
             val args = param.args ?: return@safeAfter
             val root = args.getOrNull(2) as? View ?: return@safeAfter
             if (isExcludedContext(root.context)) return@safeAfter
@@ -505,7 +511,7 @@ object FaceHookEngine {
         })
     }
 
-    private fun hookHomeCardEntryData(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookHomeCardEntryData(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_IA8) { m ->
             m.name.startsWith("setNewData") && m.parameterTypes.size == 1 &&
                 java.util.List::class.java.isAssignableFrom(m.parameterTypes[0])
@@ -514,7 +520,7 @@ object FaceHookEngine {
             dumpMethods(cl, CLASS_IA8, "setNewData")
             return null
         }
-        return XposedBridge.hookMethod(method, safeAfter("ia8#setNewData") { param ->
+        return HookBridge.hookMethod(method, safeAfter("ia8#setNewData") { param ->
             val list = param.args?.firstOrNull { it is Collection<*> } as? Collection<*> ?: return@safeAfter
             var count = 0
             for (item in list) {
@@ -529,7 +535,7 @@ object FaceHookEngine {
 
     // ------------------------------------------------------------------ H5/H6 access + eBike
 
-    private fun hookAccessFace(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookAccessFace(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_XI) { m ->
             m.name == "j" && m.parameterTypes.size >= 3 && m.parameterTypes[0] == ImageView::class.java
         } ?: run {
@@ -538,7 +544,7 @@ object FaceHookEngine {
             return null
         }
         HLog.i("xi#j signature: ${signatureOf(method)}")
-        return XposedBridge.hookMethod(method, safeAfter("xi#j") { param ->
+        return HookBridge.hookMethod(method, safeAfter("xi#j") { param ->
             val args = param.args ?: return@safeAfter
             val imageView = args.getOrNull(0) as? ImageView ?: return@safeAfter
             val ctx = (args.getOrNull(2) as? Context) ?: imageView.context
@@ -567,7 +573,7 @@ object FaceHookEngine {
         })
     }
 
-    private fun hookEbikeFace(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookEbikeFace(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_PI3) { m ->
             m.name == "c" && m.parameterTypes.size >= 3 && m.parameterTypes[0] == ImageView::class.java
         } ?: run {
@@ -576,7 +582,7 @@ object FaceHookEngine {
             return null
         }
         HLog.i("pi3#c signature: ${signatureOf(method)}")
-        return XposedBridge.hookMethod(method, safeAfter("pi3#c") { param ->
+        return HookBridge.hookMethod(method, safeAfter("pi3#c") { param ->
             val args = param.args ?: return@safeAfter
             val imageView = args.getOrNull(0) as? ImageView ?: return@safeAfter
             val ctx = (args.getOrNull(2) as? Context) ?: imageView.context
@@ -604,28 +610,28 @@ object FaceHookEngine {
 
     // ------------------------------------------------------------------ H13/H14 capture
 
-    private fun hookStackAdapter(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookStackAdapter(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_STACK) { m ->
             m.name == "setAdapter" && m.parameterTypes.size == 1
         } ?: run {
             HLog.w("SwipeCardStackView#setAdapter not found")
             return null
         }
-        return XposedBridge.hookMethod(method, safeAfter("stack#setAdapter") { param ->
+        return HookBridge.hookMethod(method, safeAfter("stack#setAdapter") { param ->
             stackRef = WeakReference(param.thisObject ?: return@safeAfter)
             stackAdapterRef = WeakReference(param.args?.getOrNull(0) ?: return@safeAfter)
             HLog.i("captured SwipeCardStackView + adapter for refresh")
         })
     }
 
-    private fun hookPagerAdapter(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookPagerAdapter(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_PAGER) { m ->
             m.name == "setAdapter" && m.parameterTypes.size == 1
         } ?: run {
             HLog.w("HwViewPager#setAdapter not found")
             return null
         }
-        return XposedBridge.hookMethod(method, safeAfter("pager#setAdapter") { param ->
+        return HookBridge.hookMethod(method, safeAfter("pager#setAdapter") { param ->
             val pager = param.thisObject ?: return@safeAfter
             val adapter = param.args?.getOrNull(0) ?: return@safeAfter
             pagerRefs.add(WeakReference(pager) to WeakReference(adapter))
@@ -640,7 +646,7 @@ object FaceHookEngine {
      * S3 "卡包/我的卡片" list rows: to6#B(defpackage.yn0 holder, Object card).
      * The row face view is iv_icon (RoundedImageView, 6dp) and the holder's item view field is "a".
      */
-    private fun hookMyCardsList(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookMyCardsList(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_TO6) { m ->
             m.name == "B" && m.parameterTypes.size == 2
         } ?: run {
@@ -649,7 +655,7 @@ object FaceHookEngine {
             return null
         }
         HLog.i("to6#B signature: ${signatureOf(method)}")
-        return XposedBridge.hookMethod(method, safeAfter("to6#B") { param ->
+        return HookBridge.hookMethod(method, safeAfter("to6#B") { param ->
             val args = param.args ?: return@safeAfter
             val holder = args.getOrNull(0) ?: return@safeAfter
             val card = args.getOrNull(1) ?: cardObjectInHolder(holder)
@@ -668,7 +674,7 @@ object FaceHookEngine {
     }
 
     /** H4: mv1#c(ImageView, Object card) loads list/thumbnail faces; enforce ours after it. */
-    private fun hookListThumbnails(cl: ClassLoader): XC_MethodHook.Unhook? {
+    private fun hookListThumbnails(cl: ClassLoader): MethodHook.Unhook? {
         val method = findWalletMethod(cl, CLASS_MV1) { m ->
             m.name == "c" && m.parameterTypes.size >= 2 && m.parameterTypes[0] == ImageView::class.java
         } ?: run {
@@ -677,7 +683,7 @@ object FaceHookEngine {
             return null
         }
         HLog.i("mv1#c signature: ${signatureOf(method)}")
-        return XposedBridge.hookMethod(method, safeAfter("mv1#c") { param ->
+        return HookBridge.hookMethod(method, safeAfter("mv1#c") { param ->
             val args = param.args ?: return@safeAfter
             val imageView = args.getOrNull(0) as? ImageView ?: return@safeAfter
             val card = args.getOrNull(1)
@@ -698,7 +704,7 @@ object FaceHookEngine {
     }
     // ------------------------------------------------------------------ detail adapters
 
-    private fun hookDetailAdapter(cl: ClassLoader, className: String, methodName: String): XC_MethodHook.Unhook? {
+    private fun hookDetailAdapter(cl: ClassLoader, className: String, methodName: String): MethodHook.Unhook? {
         val method = findWalletMethod(cl, className) { m ->
             m.name == methodName && m.parameterTypes.size == 2 &&
                 m.parameterTypes[1] == Int::class.javaPrimitiveType
@@ -708,7 +714,7 @@ object FaceHookEngine {
             return null
         }
         HLog.i("$className#$methodName signature: ${signatureOf(method)}")
-        return XposedBridge.hookMethod(method, safeAfter("$className#$methodName") { param ->
+        return HookBridge.hookMethod(method, safeAfter("$className#$methodName") { param ->
             val args = param.args ?: return@safeAfter
             val adapter = param.thisObject
             val position = args.getOrNull(1) as? Int ?: 0
@@ -733,8 +739,8 @@ object FaceHookEngine {
 
     // ------------------------------------------------------------------ ImageView guard
 
-    private fun hookImageViewGuard(): XC_MethodHook.Unhook? {
-        val hook = object : XC_MethodHook() {
+    private fun hookImageViewGuard(): MethodHook.Unhook? {
+        val hook = object : MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam?) {
                 try {
                     if (param == null) return
@@ -747,7 +753,7 @@ object FaceHookEngine {
                 }
             }
         }
-        return XposedHelpers.findAndHookMethod(
+        return HookHelpers.findAndHookMethod(
             ImageView::class.java,
             "setImageDrawable",
             Drawable::class.java,
@@ -1480,15 +1486,15 @@ object FaceHookEngine {
      * ThreadLocal current card is empty. Registering URL -> configured face here lets H2 replace
      * those loads deterministically.
      */
-    private fun hookFaceSourceGetters(cl: ClassLoader): XC_MethodHook.Unhook? {
-        var any: XC_MethodHook.Unhook? = null
+    private fun hookFaceSourceGetters(cl: ClassLoader): MethodHook.Unhook? {
+        var any: MethodHook.Unhook? = null
         for ((className, methodName) in FACE_SOURCE_GETTERS) {
             try {
                 val cls = Class.forName(className, false, cl)
                 val method = cls.declaredMethods.firstOrNull {
                     it.name == methodName && it.parameterTypes.isEmpty()
                 } ?: continue
-                val unhook = XposedBridge.hookMethod(method, safeAfter("$className#$methodName") { param ->
+                val unhook = HookBridge.hookMethod(method, safeAfter("$className#$methodName") { param ->
                     if (inFaceSourceHook.get() == true) {
                         val n = faceSourceReentries.incrementAndGet()
                         if (n == 1L || n % 100L == 0L) {

@@ -42,7 +42,15 @@ import java.io.FileNotFoundException
  */
 class FaceProvider : ContentProvider() {
 
-    override fun onCreate(): Boolean = true
+    override fun onCreate(): Boolean {
+        // Round-18: start the OPPO loopback bridge server early (fallback for panel launches that
+        // do not explicitly call PanelBridgeServer.ensureStarted).
+        try {
+            context?.let { com.cardpersonality.honor.data.bridge.PanelBridgeServer.ensureStarted(it) }
+        } catch (_: Throwable) {
+        }
+        return true
+    }
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
         val out = Bundle()
@@ -75,14 +83,29 @@ class FaceProvider : ContentProvider() {
                 }
                 CALL_GET_REPORT -> {
                     out.putString(EXTRA_JSON, FaceRepository.reportJson(ctx))
-                    out.putString(EXTRA_ENGINE, readEngineState(ctx))
+                    out.putString(EXTRA_ENGINE, mergedEngineStateJson(ctx))
                     out.putBoolean(EXTRA_OK, true)
                 }
                 CALL_ENGINE_STATE -> {
-                    out.putString(EXTRA_ENGINE, readEngineState(ctx))
+                    // Round-16: every wallet process reports its own heartbeat; merge them.
+                    out.putString(EXTRA_ENGINE, mergedEngineStateJson(ctx))
+                    out.putBoolean(EXTRA_OK, true)
+                }
+                CALL_ENGINE_HEARTBEAT -> {
+                    extras?.getString(EXTRA_ENGINE)?.takeIf { it.isNotBlank() }?.let { engineJson ->
+                        mergeProcessHeartbeat(ctx, engineJson)
+                    }
                     out.putBoolean(EXTRA_OK, true)
                 }
                 CALL_SAVE_ORIGINAL -> putSaveOriginalFace(ctx, extras, out)
+                CALL_REFRESH_ORIGINAL -> {
+                    val type = extras?.getString(EXTRA_TYPE).orEmpty()
+                    val identity = extras?.getString("id").orEmpty()
+                    val file = com.cardpersonality.honor.data.FaceRepository.originalSnapshotFile(ctx, type, identity)
+                    val deleted = file?.delete() ?: false
+                    out.putBoolean(EXTRA_OK, true)
+                    out.putBoolean("deleted", deleted)
+                }
                 CALL_ORIGINAL_EXISTS -> {
                     val type = extras?.getString(EXTRA_TYPE).orEmpty()
                     val id = extras?.getString(EXTRA_ID).orEmpty()
@@ -116,6 +139,90 @@ class FaceProvider : ContentProvider() {
      */
     /** Round-12: last wallet-engine diagnostics JSON (OPPO hook counts/observed URLs/cards). */
     private fun engineStateFile(ctx: Context): File = File(ctx.filesDir, ENGINE_STATE_FILE)
+
+    /** Round-16: per-process heartbeats (map processName -> heartbeat JSON). */
+    private fun engineProcessesFile(ctx: Context): File = File(ctx.filesDir, ENGINE_PROCESSES_FILE)
+
+    private fun mergeProcessHeartbeat(ctx: Context, json: String) {
+        try {
+            val obj = JSONObject(json)
+            val processName = obj.optString("processName").ifBlank { "default" }
+            obj.put("processName", processName)
+            obj.put("lastSeen", System.currentTimeMillis())
+            val map = readProcessMap(ctx)
+            map.put(processName, obj)
+            writeProcessMap(ctx, map)
+            // keep the legacy single-state file for older panel builds
+            saveEngineState(ctx, json)
+            OpLog.record(
+                ctx,
+                "oppo",
+                "heartbeat-ok",
+                "proc=$processName armed=${obj.optBoolean("armed")} hooks=${obj.optInt("installedCount")}",
+            )
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun readProcessMap(ctx: Context): JSONObject {
+        return try {
+            val f = engineProcessesFile(ctx)
+            if (f.isFile) JSONObject(f.readText(Charsets.UTF_8)) else JSONObject()
+        } catch (_: Throwable) {
+            JSONObject()
+        }
+    }
+
+    private fun writeProcessMap(ctx: Context, map: JSONObject) {
+        try {
+            val f = engineProcessesFile(ctx)
+            val tmp = File(f.absolutePath + ".tmp")
+            tmp.writeText(map.toString(), Charsets.UTF_8)
+            if (!tmp.renameTo(f)) {
+                f.delete()
+                tmp.renameTo(f)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * Round-16 merged engine state: `processes` array (per process heartbeat) + the freshest
+     * process's flat fields (backward compatible with round-12..15 consumers) + lastHeartbeatProcess.
+     */
+    private fun mergedEngineStateJson(ctx: Context): String {
+        return try {
+            val map = readProcessMap(ctx)
+            val entries = ArrayList<JSONObject>()
+            val keys = map.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                map.optJSONObject(key)?.let { entries.add(it) }
+            }
+            entries.sortByDescending { it.optLong("lastSeen", 0L) }
+            val processes = JSONArray()
+            entries.forEach { processes.put(it) }
+            val merged = JSONObject()
+            val last = entries.firstOrNull()
+            if (last != null) {
+                val lastKeys = last.keys()
+                while (lastKeys.hasNext()) {
+                    val k = lastKeys.next()
+                    if (k == "processes") continue
+                    merged.put(k, last.get(k))
+                }
+            } else {
+                merged.put("installed", false)
+                merged.put("heartbeatSent", false)
+            }
+            merged.put("processes", processes)
+            merged.put("lastHeartbeatProcess", last?.optString("processName").orEmpty())
+            merged.put("heartbeatSent", last != null)
+            merged.toString()
+        } catch (_: Throwable) {
+            "{}"
+        }
+    }
 
     private fun saveEngineState(ctx: Context, json: String) {
         try {
@@ -381,11 +488,13 @@ class FaceProvider : ContentProvider() {
         const val CALL_GET_REPORT = "getReport"
         const val CALL_SAVE_ORIGINAL = "saveOriginalFace"
         const val CALL_ORIGINAL_EXISTS = "originalExists"
+    private const val CALL_REFRESH_ORIGINAL = "refreshOriginal"
         const val CALL_PING = "ping"
         const val CALL_WALLETS = "wallets"
         const val CALL_SCAN_WALLETS = "scan_wallets"
         const val CALL_OPLOG = "oplog"
         const val CALL_ENGINE_STATE = "engine_state"
+        const val CALL_ENGINE_HEARTBEAT = "engine_heartbeat"
 
         const val EXTRA_JSON = "json"
         const val EXTRA_TYPE = "type"
@@ -415,6 +524,9 @@ class FaceProvider : ContentProvider() {
 
         /** Last wallet-engine diagnostics JSON (OPPO hook state, shown in About/diagnostics). */
         private const val ENGINE_STATE_FILE = "oppo_engine.json"
+
+        /** Round-16: per-process heartbeat map (processName -> heartbeat JSON). */
+        private const val ENGINE_PROCESSES_FILE = "oppo_engine_processes.json"
 
         /** Hard cap for one stored snapshot (hook sends long-side<=640 JPEG q85). */
         private const val ORIGINAL_MAX_BYTES = 3 * 1024 * 1024

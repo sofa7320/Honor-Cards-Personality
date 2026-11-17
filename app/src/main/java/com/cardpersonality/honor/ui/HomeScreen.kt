@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -29,11 +30,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -53,7 +56,11 @@ import com.cardpersonality.honor.data.CardKey
 import com.cardpersonality.honor.data.CardTypes
 import com.cardpersonality.honor.data.Contract
 import com.cardpersonality.honor.data.FaceRepository
+import com.cardpersonality.honor.ui.util.DiagnosticExporter
+import com.cardpersonality.honor.ui.util.OppoEngineProbe
+import com.cardpersonality.honor.ui.util.OppoEngineStatus
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -89,8 +96,13 @@ fun HomeScreen(
     var loading by remember { mutableStateOf(true) }
     var moduleConnected by remember { mutableStateOf<Boolean?>(null) }
     var storeVersion by remember { mutableIntStateOf(0) }
+    var bridgeReportVersion by remember { mutableStateOf(0L) }
     var detectedWallets by remember { mutableStateOf<List<WalletPackages.InstalledWallet>>(emptyList()) }
     var walletSnapshot by remember { mutableStateOf<WalletsSnapshot?>(null) }
+    var oppoEngineStatus by remember { mutableStateOf<OppoEngineStatus?>(null) }
+    var exportingDiagnostics by remember { mutableStateOf(false) }
+    var refreshOriginalsOnResume by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val walletPackagesText = remember(detectedWallets, walletSnapshot) {
         val installed = walletSnapshot?.installedPackages?.takeIf { it.isNotEmpty() }
             ?: detectedWallets.map { it.packageName }
@@ -104,7 +116,12 @@ fun HomeScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) reloadKey++
+            if (event == Lifecycle.Event.ON_RESUME) {
+                // Round 23: coming back from the wallet may mean the user changed a card face
+                // natively there (e.g. Honor access card). Invalidate uncustomized snapshots.
+                refreshOriginalsOnResume = true
+                reloadKey++
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -114,11 +131,33 @@ fun HomeScreen(
         loading = true
         val loadResult = runCatching {
             withContext(Dispatchers.IO) {
-                cards = FaceRepository.cards(ctx)
+                // Round 18: bridge is the OPPO IPC path; ensure it is listening before reading state.
+                runCatching {
+                    com.cardpersonality.honor.data.bridge.PanelBridgeServer.ensureStarted(ctx)
+                }
+                cards = FaceRepository.cards(ctx).filterNot { isPlaceholderCard(it) }
+                if (refreshOriginalsOnResume) {
+                    refreshOriginalsOnResume = false
+                    cards.forEach { card ->
+                        if (card.key.id != CardKey.TYPE_DEFAULT_ID &&
+                            !FaceRepository.hasCustomFace(
+                                ctx, card.key.type, card.key.id, card.walletPackage,
+                            )
+                        ) {
+                            com.cardpersonality.honor.ui.util.OriginalSnapshotRefresh.refreshIfNeeded(
+                                ctx, card.key.type, card.key.id,
+                            )
+                        }
+                    }
+                }
                 reportUpdatedAt = FaceRepository.reportUpdatedAt(ctx)
                 storeVersion = FaceRepository.storeVersion(ctx)
+                bridgeReportVersion = runCatching {
+                    com.cardpersonality.honor.data.bridge.PanelBridgeServer.reportVersion()
+                }.getOrDefault(bridgeReportVersion)
                 detectedWallets = WalletPackages.installed(ctx)
                 walletSnapshot = WalletProbe.query(ctx)
+                oppoEngineStatus = OppoEngineProbe.query(ctx)
             }
         }
         moduleConnected = withContext(Dispatchers.IO) {
@@ -141,16 +180,53 @@ fun HomeScreen(
         }
     }
 
+    val oppoDetected = walletPackagesText.contains(WalletPackages.OPPO)
+    val oppoNotInjected = oppoDetected && oppoEngineStatus?.injected != true
+
+    fun openLsposed() {
+        if (!OppoEngineProbe.openLsposedManager(ctx)) {
+            Toast.makeText(
+                ctx,
+                "未找到 LSPosed 管理器，请在 LSPosed 中手动为「欧加钱包」勾选模块作用域",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    fun exportDiagnosticsNow() {
+        if (exportingDiagnostics) return
+        exportingDiagnostics = true
+        scope.launch {
+            val result = DiagnosticExporter.export(ctx)
+            exportingDiagnostics = false
+            if (result.ok) {
+                val suffix = result.error?.let { "（$it）" } ?: ""
+                Toast.makeText(ctx, "已导出诊断报告：${result.path}$suffix", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(ctx, "导出失败：" + (result.error ?: "未知错误"), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
     // Watch the stored config version so a face change made elsewhere (editor save, hook write)
     // refreshes the list + thumbnails automatically instead of waiting for an app restart.
+    // Round 19: also watch the bridge reportVersion so OPPO cards pushed from the wallet appear
+    // without a manual refresh.
     LaunchedEffect(Unit) {
         while (true) {
             kotlinx.coroutines.delay(1500)
             val version = withContext(Dispatchers.IO) {
                 runCatching { FaceRepository.storeVersion(ctx) }.getOrDefault(storeVersion)
             }
+            val bridgeVersion = withContext(Dispatchers.IO) {
+                runCatching {
+                    com.cardpersonality.honor.data.bridge.PanelBridgeServer.reportVersion()
+                }.getOrDefault(bridgeReportVersion)
+            }
             if (version != storeVersion) {
                 storeVersion = version
+                reloadKey++
+            } else if (bridgeVersion != bridgeReportVersion) {
+                bridgeReportVersion = bridgeVersion
                 reloadKey++
             }
         }
@@ -180,7 +256,20 @@ fun HomeScreen(
                 bottom = innerPadding.calculateBottomPadding() + 32.dp,
             ),
         ) {
-            item { StatusCard(moduleConnected, reportUpdatedAt, cards.size, walletPackagesText, BuildConfig.VERSION_NAME) }
+            item {
+                StatusCard(
+                    moduleConnected = moduleConnected,
+                    reportUpdatedAt = reportUpdatedAt,
+                    cardCount = cards.size,
+                    walletPackagesText = walletPackagesText,
+                    versionName = BuildConfig.VERSION_NAME,
+                    oppoStatus = oppoEngineStatus,
+                    oppoDetected = oppoDetected,
+                    exportingDiagnostics = exportingDiagnostics,
+                    onOpenLsposed = { openLsposed() },
+                    onExportDiagnostics = { exportDiagnosticsNow() },
+                )
+            }
 
             val grouped = cards.groupBy { it.type }
             if (cards.isEmpty()) {
@@ -190,6 +279,9 @@ fun HomeScreen(
                         reportUpdatedAt = reportUpdatedAt,
                         cardCount = cards.size,
                         walletPackagesText = walletPackagesText,
+                        oppoDetected = oppoDetected,
+                        oppoNotInjected = oppoNotInjected,
+                        onOpenLsposed = { openLsposed() },
                         onRefresh = { if (!loading) reloadKey++ },
                         onOpenAbout = onOpenAbout,
                         onOpenSample = {
@@ -295,7 +387,14 @@ private fun StatusCard(
     cardCount: Int,
     walletPackagesText: String,
     versionName: String,
+    oppoStatus: OppoEngineStatus?,
+    oppoDetected: Boolean,
+    exportingDiagnostics: Boolean,
+    onOpenLsposed: () -> Unit,
+    onExportDiagnostics: () -> Unit,
 ) {
+    // Round 16: per-process injection evidence (expandable rows).
+    var expandedProcesses by remember { mutableStateOf(setOf<String>()) }
     val hookReported = reportUpdatedAt > 0L
     val accent = when {
         moduleConnected == false -> Color(0xFFE94634)
@@ -317,38 +416,250 @@ private fun StatusCard(
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
+        Column {
+            Row(
                 modifier = Modifier
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(accent),
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(title, style = MiuixTheme.textStyles.body1)
-                if (summary.isNotEmpty()) {
-                    Text(
-                        summary,
-                        style = MiuixTheme.textStyles.footnote1,
-                        color = MiuixTheme.colorScheme.onBackgroundVariant,
-                    )
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(accent),
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MiuixTheme.textStyles.body1)
+                    if (summary.isNotEmpty()) {
+                        Text(
+                            summary,
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onBackgroundVariant,
+                        )
+                    }
+                }
+                if (moduleConnected == null) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                } else {
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = "v$versionName",
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onBackgroundVariant,
+                        )
+                    }
                 }
             }
-            if (moduleConnected == null) {
-                CircularProgressIndicator(modifier = Modifier.size(18.dp))
-            } else {
-                Column(horizontalAlignment = Alignment.End) {
+
+            // Round 15/16: OPPO self-diagnosis (only shown when the OPPO wallet is installed).
+            if (oppoDetected && oppoStatus != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp)
+                        .height(0.5.dp)
+                        .background(MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.2f)),
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     Text(
-                        text = "v$versionName",
-                        style = MiuixTheme.textStyles.footnote1,
-                        color = MiuixTheme.colorScheme.onBackgroundVariant,
+                        text = "欧加钱包注入状态",
+                        style = MiuixTheme.textStyles.body1,
                     )
+                    if (oppoStatus.processes.isNotEmpty()) {
+                        Text(
+                            text = "检测到 ${oppoStatus.processes.size} 个进程（点击展开证据）",
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onBackgroundVariant,
+                        )
+                        oppoStatus.processes.forEach { process ->
+                            val expanded = process.name in expandedProcesses
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        expandedProcesses = if (expanded) {
+                                            expandedProcesses - process.name
+                                        } else {
+                                            expandedProcesses + process.name
+                                        }
+                                    }
+                                    .padding(vertical = 6.dp),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = process.name,
+                                        style = MiuixTheme.textStyles.footnote1,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Text(
+                                        text = if (process.isMain) "主进程" else "子进程",
+                                        style = MiuixTheme.textStyles.footnote2,
+                                        color = MiuixTheme.colorScheme.onBackgroundVariant,
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = "心跳 " + process.heartbeatText,
+                                        style = MiuixTheme.textStyles.footnote2,
+                                        color = MiuixTheme.colorScheme.onBackgroundVariant,
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Icon(
+                                        MiuixIcons.ChevronForward,
+                                        contentDescription = null,
+                                        tint = MiuixTheme.colorScheme.onBackgroundVariant,
+                                        modifier = Modifier
+                                            .size(16.dp)
+                                            .rotate(if (expanded) 90f else 0f),
+                                    )
+                                }
+                                if (expanded) {
+                                    Text(
+                                        text = "armed=${process.armed} · hooks=${process.installedHooks}/${process.attemptedHooks} · missed=${process.missed.size}",
+                                        style = MiuixTheme.textStyles.footnote2,
+                                        color = MiuixTheme.colorScheme.onBackgroundVariant,
+                                    )
+                                    Text(
+                                        text = process.classesSummary,
+                                        style = MiuixTheme.textStyles.footnote2,
+                                        color = MiuixTheme.colorScheme.onBackgroundVariant,
+                                    )
+                                    if (process.missed.isNotEmpty()) {
+                                        Text(
+                                            text = "missed：" + process.missed.take(3)
+                                                .joinToString(", "),
+                                            style = MiuixTheme.textStyles.footnote2,
+                                            color = MiuixTheme.colorScheme.onBackgroundVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    when {
+                        oppoStatus.cardCount > 0 -> {
+                            Text(
+                                text = "欧加钱包已上报 ${oppoStatus.cardCount} 张卡片",
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onBackgroundVariant,
+                            )
+                        }
+                        !oppoStatus.bridgeConnected -> {
+                            Text(
+                                text = "面板 bridge 未连接",
+                                style = MiuixTheme.textStyles.body1,
+                            )
+                            Text(
+                                text = "请打开欧加钱包，并确认本模块已启用（v44+）：\n" +
+                                    "1. 打开一次欧加钱包的卡包页\n" +
+                                    "2. 打开 LSPosed → 模块 → 荣耀卡面工坊，确认模块已启用且作用域已勾选「欧加钱包」\n" +
+                                    "3. 勾选作用域后需重启手机（或至少强行停止欧加钱包与荣耀卡面工坊后再打开）",
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onBackgroundVariant,
+                            )
+                            TextButton(
+                                text = "打开 LSPosed",
+                                onClick = onOpenLsposed,
+                            )
+                            TextButton(
+                                text = if (exportingDiagnostics) "正在生成诊断报告…" else "导出诊断报告",
+                                onClick = { if (!exportingDiagnostics) onExportDiagnostics() },
+                            )
+                        }
+                        oppoStatus.processes.isEmpty() -> {
+                            Text(
+                                text = "bridge 已连接，但尚未收到进程心跳",
+                                style = MiuixTheme.textStyles.body1,
+                            )
+                            Text(
+                                text = "请打开欧加钱包的卡包页或卡片详情页，然后返回本页刷新。",
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onBackgroundVariant,
+                            )
+                            TextButton(
+                                text = if (exportingDiagnostics) "正在生成诊断报告…" else "导出诊断报告",
+                                onClick = { if (!exportingDiagnostics) onExportDiagnostics() },
+                            )
+                        }
+                        !oppoStatus.hasAnyHeartbeat -> {
+                            Text(
+                                text = "bridge 已连接，但进程心跳已过期",
+                                style = MiuixTheme.textStyles.body1,
+                            )
+                            Text(
+                                text = "请重新打开欧加钱包卡包页后再刷新；若持续无心跳，请重启手机或重新打开本模块作用域。",
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onBackgroundVariant,
+                            )
+                            TextButton(
+                                text = if (exportingDiagnostics) "正在生成诊断报告…" else "导出诊断报告",
+                                onClick = { if (!exportingDiagnostics) onExportDiagnostics() },
+                            )
+                        }
+                        !oppoStatus.hasMainHeartbeat -> {
+                            val injectedNames = oppoStatus.freshProcesses
+                                .joinToString(", ") { it.name }
+                                .ifEmpty { "（子进程）" }
+                            Text(
+                                text = "已注入进程 $injectedNames，但主进程未注入",
+                                style = MiuixTheme.textStyles.body1,
+                            )
+                            Text(
+                                text = "主进程尚未加载模块：请重启手机（或强行停止欧加钱包与荣耀卡面工坊后重新打开）再试。",
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onBackgroundVariant,
+                            )
+                        }
+                        else -> {
+                            val main = oppoStatus.mainProcess
+                            val hooks = main?.installedHooks ?: oppoStatus.hooks
+                            val connectedProcess = oppoStatus.lastHelloProcess
+                                ?: main?.name
+                                ?: oppoStatus.processName
+                                ?: "欧加钱包"
+                            Text(
+                                text = "已连接进程 $connectedProcess，heartbeat ${main?.heartbeatText ?: oppoStatus.heartbeatText}；" +
+                                    "hooks=$hooks；port=${oppoStatus.bridgePort}",
+                                style = MiuixTheme.textStyles.body1,
+                            )
+                            if (main != null && main.classProbes.isNotEmpty()) {
+                                Text(
+                                    text = main.classesSummary,
+                                    style = MiuixTheme.textStyles.footnote1,
+                                    color = MiuixTheme.colorScheme.onBackgroundVariant,
+                                )
+                            }
+                            val missingClasses = main?.classProbes.orEmpty()
+                                .filterValues { found -> !found }
+                                .keys
+                                .filter { key -> key == "NfcCard" || key == "NfcCardRoomDao_Impl" }
+                            if (missingClasses.isNotEmpty()) {
+                                Text(
+                                    text = "关键类未找到（${missingClasses.joinToString(", ")}），" +
+                                        "模块可能与当前欧加钱包版本不匹配，请导出诊断报告。",
+                                    style = MiuixTheme.textStyles.footnote1,
+                                    color = MiuixTheme.colorScheme.onBackgroundVariant,
+                                )
+                            } else {
+                                Text(
+                                    text = "已注入、尚未识别到卡片：请打开卡包页后刷新。",
+                                    style = MiuixTheme.textStyles.footnote1,
+                                    color = MiuixTheme.colorScheme.onBackgroundVariant,
+                                )
+                            }
+                            TextButton(
+                                text = if (exportingDiagnostics) "正在生成诊断报告…" else "导出诊断报告",
+                                onClick = { if (!exportingDiagnostics) onExportDiagnostics() },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -363,8 +674,10 @@ private fun DetectedCardRow(
     walletPackage: String?,
     onOpenEditor: (EditorTarget) -> Unit,
 ) {
-    val cfg = remember(card.key.fileKey, refreshToken) {
-        FaceRepository.resolveConfig(ctx, card.key.type, card.key.id) ?: CardFaceConfig()
+    val cardWallet = card.walletPackage.takeIf { it.isNotBlank() } ?: walletPackage
+    val cfg = remember(card.key.fileKey, refreshToken, cardWallet) {
+        FaceRepository.resolveConfig(ctx, card.key.type, card.key.id, cardWallet)
+            ?: CardFaceConfig()
     }
     val displayName = card.name.ifBlank { CardTypes.displayName(card.type) }
     Card(
@@ -378,7 +691,8 @@ private fun DetectedCardRow(
                     title = displayName,
                     subtitle = card.subtitle.ifBlank { CardTypes.displayName(card.type) },
                     appElementIds = card.appElementIds,
-                    walletPackage = walletPackage,
+                    walletPackage = cardWallet,
+                    faceUrl = card.faceUrl,
                 ),
             )
         },
@@ -509,8 +823,9 @@ private fun CardFaceRowThumbnail(
         refreshToken,
     ) {
         value = withContext(Dispatchers.IO) {
+            val wallet = card.walletPackage.takeIf { it.isNotBlank() }
             val file = if (cfg.hasCustomFace) {
-                FaceRepository.exportFileFor(ctx, card.type, card.key.id)
+                FaceRepository.exportFileFor(ctx, card.type, card.key.id, wallet)
             } else {
                 FaceRepository.ensureOriginalFace(ctx, card)
             }
@@ -628,6 +943,9 @@ private fun EmptyState(
     reportUpdatedAt: Long,
     cardCount: Int,
     walletPackagesText: String,
+    oppoDetected: Boolean,
+    oppoNotInjected: Boolean,
+    onOpenLsposed: () -> Unit,
     onRefresh: () -> Unit,
     onOpenAbout: () -> Unit,
     onOpenSample: () -> Unit,
@@ -652,7 +970,11 @@ private fun EmptyState(
             )
             Text("尚未识别到卡片", style = MiuixTheme.textStyles.subtitle)
             Text(
-                text = "打开一次荣耀钱包后返回本页刷新；也可以先按卡类型设置默认卡面。",
+                text = if (oppoDetected) {
+                    "打开一次欧加钱包的卡包页/详情页后返回本页刷新；也可以先按卡类型设置默认卡面。"
+                } else {
+                    "打开一次荣耀钱包后返回本页刷新；也可以先按卡类型设置默认卡面。"
+                },
                 style = MiuixTheme.textStyles.footnote1,
                 color = MiuixTheme.colorScheme.onBackgroundVariant,
             )
@@ -675,6 +997,12 @@ private fun EmptyState(
                 colors = ButtonDefaults.buttonColorsPrimary(),
                 modifier = Modifier.widthIn(min = 160.dp),
             ) { Text(if (loading) "刷新中…" else "刷新") }
+            if (oppoNotInjected) {
+                TextButton(
+                    text = "打开 LSPosed",
+                    onClick = onOpenLsposed,
+                )
+            }
             TextButton(
                 text = "查看支持的钱包",
                 onClick = onOpenAbout,
@@ -687,6 +1015,24 @@ private fun EmptyState(
     }
 }
 
+/**
+ * Round 22: wallet "add card" placeholders are reported like real cards on some OPPO builds
+ * (name「添加卡」/ identity -1). Hide them defensively at the list layer too.
+ */
+private fun isPlaceholderCard(card: CardInfo): Boolean {
+    val identity = card.key.id.trim()
+    if (identity.isEmpty() || identity == "-1") return true
+    val name = card.name.trim()
+    if (name.isEmpty()) return false
+    return name == "添加" ||
+        name == "添加卡" ||
+        name == "添加交通卡" ||
+        name == "添加门禁卡" ||
+        name.contains("添加卡") ||
+        name.contains("添加交通卡") ||
+        name.contains("添加门禁卡")
+}
+
 private fun formatTime(millis: Long): String {
     if (millis <= 0L) return ""
     return try {
@@ -695,6 +1041,18 @@ private fun formatTime(millis: Long): String {
         ""
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

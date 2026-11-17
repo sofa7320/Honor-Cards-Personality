@@ -131,6 +131,8 @@ data class EditorTarget(
     val appElementIds: List<String> = emptyList(),
     /** Wallet package this card was detected in (null = infer from installed wallets). */
     val walletPackage: String? = null,
+    /** Wallet's original face URL/path for this card (round 23: OPPO bridge URL fallback). */
+    val faceUrl: String? = null,
 )
 
 /** Which colour of which sticker the colour picker dialog is editing. */
@@ -220,7 +222,7 @@ fun EditorScreen(
 ) {
     val scope = rememberCoroutineScope()
     val initial = remember(target.key) {
-        FaceRepository.loadCard(ctx, target.key) ?: CardFaceConfig()
+        FaceRepository.loadCard(ctx, target.key, target.walletPackage) ?: CardFaceConfig()
     }
     var cfg by remember(target.key) { mutableStateOf(initial) }
     var baseline by remember(target.key) { mutableStateOf(initial) }
@@ -228,7 +230,7 @@ fun EditorScreen(
     // on a sticker does not recompose the whole editor (image tab, dialogs, etc.).
     val selectedSticker = remember { mutableStateOf<String?>(null) }
     var hasStoredCustomFace by remember(target.key) {
-        mutableStateOf(FaceRepository.hasCustomFace(ctx, target.key.type, target.key.id))
+        mutableStateOf(FaceRepository.hasCustomFace(ctx, target.key.type, target.key.id, target.walletPackage))
     }
     var tab by remember { mutableIntStateOf(0) }
     var saving by remember { mutableStateOf(false) }
@@ -245,6 +247,21 @@ fun EditorScreen(
     var renameStickerId by remember { mutableStateOf<String?>(null) }
     var colorPickerRequest by remember { mutableStateOf<ColorPickerRequest?>(null) }
     var tabAnimInitialised by remember { mutableStateOf(false) }
+
+    // Round 23: wallet-native custom faces (e.g. Honor access cards) must show up in the panel
+    // immediately. On editor open, invalidate + re-capture the wallet-original snapshot for cards
+    // the panel has not customized (2 s debounce lives in OriginalSnapshotRefresh).
+    LaunchedEffect(target.key, target.walletPackage) {
+        if (!hasStoredCustomFace) {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    com.cardpersonality.honor.ui.util.OriginalSnapshotRefresh.refreshIfNeeded(
+                        ctx, target.key.type, target.key.id,
+                    )
+                }
+            }
+        }
+    }
 
     /** Persist the auto-snap toggle (app-level setting, not part of the card config). */
     fun setSnapEnabled(value: Boolean) {
@@ -318,11 +335,17 @@ fun EditorScreen(
         saving = true
         scope.launch {
             withContext(Dispatchers.IO) {
-                runCatching { FaceRepository.saveCard(ctx, target.key, cfg) }
+                runCatching { FaceRepository.saveCard(ctx, target.key, cfg, target.walletPackage) }
+                // Round 23: explicit OPPO URL-fallback PUT using the card's reported faceUrl.
+                runCatching {
+                    com.cardpersonality.honor.ui.util.OppoFaceUrlPush.push(
+                        ctx, target.key, target.walletPackage, target.faceUrl,
+                    )
+                }
             }
             saving = false
             showExitDialog = false
-            Toast.makeText(ctx, "已保存，切换回荣耀钱包即可生效", Toast.LENGTH_SHORT).show()
+            Toast.makeText(ctx, "已保存，切换回钱包即可生效", Toast.LENGTH_SHORT).show()
             if (thenExit) onDone()
         }
     }
@@ -484,7 +507,10 @@ fun EditorScreen(
                 if (imported != null) {
                     runCatching {
                         withContext(Dispatchers.IO) {
-                            FaceRepository.saveCard(ctx, target.key, imported)
+                            FaceRepository.saveCard(ctx, target.key, imported, target.walletPackage)
+                            com.cardpersonality.honor.ui.util.OppoFaceUrlPush.push(
+                                ctx, target.key, target.walletPackage, target.faceUrl,
+                            )
                             FaceRepository.notifyWalletConfigChanged(ctx)
                         }
                     }
@@ -840,12 +866,17 @@ fun EditorScreen(
                         scope.launch {
                             withContext(Dispatchers.IO) {
                                 runCatching {
-                                    FaceRepository.restoreOriginalFace(ctx, target.key)
+                                    FaceRepository.clearCard(ctx, target.key, target.walletPackage)
+                                    // Round 22: invalidate cached wallet-original snapshots so the
+                                    // preview re-captures the current (restored) card face.
+                                    FaceRepository.refreshOriginalSnapshots(
+                                        ctx, target.key.type, target.key.id,
+                                    )
                                 }
                             }
                             val stillCustom = withContext(Dispatchers.IO) {
                                 FaceRepository.hasCustomFace(
-                                    ctx, target.key.type, target.key.id,
+                                    ctx, target.key.type, target.key.id, target.walletPackage,
                                 )
                             }
                             Toast.makeText(
@@ -2390,6 +2421,10 @@ private fun List<StickerSpec>.move(from: Int, to: Int): List<StickerSpec> {
     list.add(to, item)
     return list
 }
+
+
+
+
 
 
 

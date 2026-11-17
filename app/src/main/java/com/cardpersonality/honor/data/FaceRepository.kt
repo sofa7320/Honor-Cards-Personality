@@ -265,6 +265,7 @@ object FaceRepository {
         }
         writeStore(ctx, ConfigStore(globalVersion, now, cards, types))
         renderExport(ctx, key, wallet)
+        pushToWalletBridge(ctx, key, wallet)
         OpLog.record(
             ctx,
             "config",
@@ -296,6 +297,14 @@ object FaceRepository {
         exportFile(ctx, fileKey)?.delete()
         if (WalletScope.isHonor(wallet)) exportFile(ctx, key.fileKey)?.delete()
         notifyWalletConfigChanged(ctx)
+        if (WalletScope.isOppo(wallet)) {
+            try {
+                com.cardpersonality.honor.data.bridge.PanelBridgeServer.ensureStarted(ctx)
+                com.cardpersonality.honor.data.bridge.PanelBridgeServer.pushConfig(ctx, allConfigsJson(ctx))
+                com.cardpersonality.honor.data.bridge.PanelBridgeServer.pushFaceDelete(ctx, fileKey)
+            } catch (_: Throwable) {
+            }
+        }
         OpLog.record(ctx, "config", "clear", "$fileKey wallet=$wallet")
     }
 
@@ -782,6 +791,25 @@ object FaceRepository {
     }
 
     /** Deletes the custom configuration for [key] so the wallet shows its original face again. */
+    /** Round-22: reset/native-face-change hook for the UI: invalidate the cached original everywhere. */
+    fun refreshOriginalSnapshots(ctx: Context, type: String, id: String) {
+        try {
+            com.cardpersonality.honor.hook.ProviderClient.refreshOriginal(type, id)
+        } catch (_: Throwable) {
+        }
+        try {
+            com.cardpersonality.honor.data.bridge.PanelBridgeServer.ensureStarted(ctx)
+            for (wallet in WalletScope.OPPO_PACKAGES) {
+                com.cardpersonality.honor.data.bridge.PanelBridgeServer.refreshOriginal(ctx, type, id)
+            }
+        } catch (_: Throwable) {
+        }
+        try {
+            com.cardpersonality.honor.hook.FaceCapture.invalidate(type, id)
+        } catch (_: Throwable) {
+        }
+    }
+
     fun restoreOriginalFace(ctx: Context, key: CardKey) {
         clearCard(ctx, key)
     }
@@ -1195,6 +1223,45 @@ object FaceRepository {
             )
         },
     )
+
+    /**
+     * Round-18: OPPO cards are not served through the ContentProvider (the OPPO wallet cannot
+     * resolve it). Push the full scoped config + our rendered JPEG through the loopback bridge so
+     * the wallet can replace the URL argument with the local file:// face.
+     */
+    private fun pushToWalletBridge(ctx: Context, key: CardKey, walletPackage: String?) {
+        val wallet = WalletScope.normalize(walletPackage)
+        if (!WalletScope.isOppo(wallet)) return
+        try {
+            val scoped = WalletScope.configFileKey(key, wallet)
+            val export = exportFile(ctx, scoped)
+            val cfg = loadCard(ctx, key, wallet) ?: effective(ctx, key.type, key.id, wallet)?.config
+            if (cfg == null || !cfg.hasCustomFace || !export.isFile) return
+            com.cardpersonality.honor.data.bridge.PanelBridgeServer.ensureStarted(ctx)
+            val configJson = allConfigsJson(ctx)
+            com.cardpersonality.honor.data.bridge.PanelBridgeServer.pushConfig(ctx, configJson)
+            val keys = runCatching { org.json.JSONObject(configJson).optJSONObject("cards")?.length() ?: 0 }.getOrDefault(0)
+            OpLog.record(ctx, "bridge", "push-config", "wallet=$wallet keys=$keys")
+            // Round-23: the wallet's original face URL lets it match by exact source URL even when
+            // the reported identity differs from the rendered NFC identity (friend-module approach).
+            val faceUrl = try {
+                cards(ctx).firstOrNull {
+                    it.key.type == key.type && it.key.id == key.id && it.walletPackage == wallet
+                }?.faceUrl
+            } catch (_: Throwable) {
+                null
+            }
+            com.cardpersonality.honor.data.bridge.PanelBridgeServer.pushFace(
+                ctx,
+                scoped,
+                cfg.version,
+                export.readBytes(),
+                faceUrl,
+            )
+            OpLog.record(ctx, "bridge", "push-face", "key=$scoped wallet=$wallet v=${cfg.version}")
+        } catch (_: Throwable) {
+        }
+    }
 
     private fun writeTextAtomically(target: File, text: String) {
         target.parentFile?.mkdirs()
