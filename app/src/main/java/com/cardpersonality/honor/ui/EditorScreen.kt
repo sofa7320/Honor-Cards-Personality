@@ -242,9 +242,10 @@ fun EditorScreen(
     var faceUrlFallbackFailed by remember(target.key) { mutableStateOf(false) }
     var snapEnabled by remember { mutableStateOf(EditorPrefs.isSnapEnabled(ctx)) }
     // Round 25: export quality (1x..10x) persisted globally and applied to all renders/exports.
-    var exportScale by remember {
-        mutableStateOf(EditorPrefs.getExportScale(ctx).takeIf { it in 1..10 } ?: 4)
+    val initialExportScale = remember(target.key) {
+        EditorPrefs.getExportScale(ctx).takeIf { it in 1..10 } ?: 4
     }
+    var exportScale by remember(target.key) { mutableStateOf(initialExportScale) }
     LaunchedEffect(exportScale) {
         com.cardpersonality.honor.FaceRenderer.setExportScale(exportScale)
         EditorPrefs.setExportScale(ctx, exportScale)
@@ -337,13 +338,18 @@ fun EditorScreen(
         }
     }
 
-    val dirty = !cfg.sameVisual(baseline)
+    // Round 25 fix: a quality-only change must dirty the editor so Save re-renders/exports.
+    val scaleDirty = exportScale != initialExportScale
+    val dirty = scaleDirty || !cfg.sameVisual(baseline)
 
     fun save(thenExit: Boolean = true) {
         if (saving) return
         saving = true
         scope.launch {
             withContext(Dispatchers.IO) {
+                // Round 25 fix: the render happens inside saveCard, so apply the chosen quality
+                // (including when only the export slider changed) right before saving.
+                com.cardpersonality.honor.FaceRenderer.setExportScale(exportScale)
                 runCatching { FaceRepository.saveCard(ctx, target.key, cfg, target.walletPackage) }
                 // Round 23: explicit OPPO URL-fallback PUT using the card's reported faceUrl.
                 runCatching {
@@ -529,6 +535,7 @@ fun EditorScreen(
                 if (imported != null) {
                     runCatching {
                         withContext(Dispatchers.IO) {
+                            com.cardpersonality.honor.FaceRenderer.setExportScale(exportScale)
                             FaceRepository.saveCard(ctx, target.key, imported, target.walletPackage)
                             com.cardpersonality.honor.ui.util.OppoFaceUrlPush.push(
                                 ctx, target.key, target.walletPackage, target.faceUrl,
@@ -2483,6 +2490,8 @@ private fun List<StickerSpec>.move(from: Int, to: Int): List<StickerSpec> {
     list.add(to, item)
     return list
 }
+
+
 
 
 
