@@ -3,18 +3,32 @@
 本文件记录「荣耀卡面工坊」的所有重要变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循语义化版本（`versionCode` 固定为 1，不随版本递增）。
 
-## 0.3.0 预发布系列（0.2.6 – 0.2.13）
+## 0.3.0 预发布系列（0.2.6 – 0.2.14）
 
-> 0.2.6～0.2.12 均为 **0.3.0 的预发布版本**（含 Pre-release 标签）。它们分别引入了多钱包框架、OPPO 静态适配、诊断与 bridge 通信、API 102 迁移、OPPO 保存与荣耀双向卡面等能力。
 > **0.3.0 正式发布时**，将把 0.2.6～0.2.12 的所有变更统一汇总为「自 0.2.5 以来的变更」写入 0.3.0 的发布说明与 CHANGELOG，届时本区间的逐版本条目保留为历史记录。
 
 ## [Unreleased]
 
 （暂无）
 
+## [0.2.14] - 2026-11-17
+
+### 新增
+- **编辑页「输出」栏**：集中「重置为钱包原始卡面」与 **导出画质 1x–10x** 滑块（显示当前倍率与预计输出尺寸，按卡持久化）。
+- **页面切换滑动转场**：页面之间采用 Miuix 风格的横向滑动动画（前进/后退方向相反）。
+
+### 修复
+- **OPPO 银行卡在部分机型不显示**：占位卡过滤不再误伤 identity 回退为 -1 的真实银行卡；对无法取到卡号的卡用可用字段派生稳定 identity 并正常上报。
+- **OPPO 原生/第三方自定义卡面无法预览**：钱包渲染卡面时抓取当前显示图并上报 ORIGINAL，编辑器可显示钱包当前卡面（含钱包原生自定义、oplus-card-customizer 自定义）。
+
+### 变更
+- **首页缩略图降采样**（低分辨率解码，降低内存占用），不影响编辑与导出画质。
+- **移除首页 1.5s 轮询刷新**：改为 App 打开、编辑返回首页时各刷新一次，保留手动刷新按钮。
+- **卡面图像缩放改用 Lanczos3**（高质量重采样），用于渲染、导出与缩略图。
+- 版本 0.2.14；`versionCode` 固定 1。
+
 ## [0.2.13] - 2026-11-17
 
-> 本轮以 **Pre-release** 发布；通过 **Pull Request**（base=`main`）提交，不直接推送 `main`。
 
 ### 新增
 - **小米智能卡适配**（`com.miui.tsmclient`）：新增小米钱包引擎；Glide 加载入口 hook + dex 扫描定位卡面工厂与 CardInfo 方法；复用 loopback bridge 推送渲染图，钱包侧写入自身私有目录并以 `file://` 替换（无需 root）；卡面几何 320:202 → 960×606。参考 [卡面工坊](https://github.com/MiamBao/cardface-miuix)。
@@ -30,7 +44,6 @@
 
 ## [0.2.12] - 2026-11-17
 
-> 本轮以 **Pre-release** 发布；通过 **Pull Request**（stacked）提交，不直接合并 `main`。
 
 ### 修复
 - **OPPO 卡面保存不生效（第二轮）**：钱包渲染时使用的卡片 identity 可能与面板保存时不一致，导致替换始终未命中。新增**原始卡面 URL 精确匹配兜底**：bridge `PUT` 增加 `faceUrl`（Base64 第 5 段），钱包维护 URL→本地卡面映射（去 query/scheme/basename 别名），identity 未命中时按 URL 命中替换为 `file://`；新增 `oppo|put-ok/config-ok/replace-hit/replace-miss` 诊断日志。
@@ -38,7 +51,6 @@
 
 ## [0.2.11] - 2026-11-17
 
-> 本轮以 **Pre-release** 发布；通过 **Pull Request**（stacked）提交，不直接合并 `main`。
 
 ### 变更
 - **API 全量迁移到 libxposed API 102**：删除 legacy 入口（`assets/xposed_init`、manifest legacy meta-data）与 `xposed-stub`/`de.robv.android.xposed` 包；hook 兼容层改为内部 `com.cardpersonality.honor.hook.api` 包（内部使用 libxposed API 102）；仅保留 `META-INF/xposed/{module.prop,java_init.list,scope.list}` 现代元数据。
@@ -51,7 +63,6 @@
 
 ## [0.2.10] - 2026-11-16
 
-> 本轮通过 **Pull Request**（stacked）提交，不直接合并 `main`；以 **Pre-release** 发布。
 > OPPO 系改动为静态移植实现，无需实机验证（维护者无 OPPO 设备）。
 
 ### 新增
@@ -65,7 +76,6 @@
 
 ## [0.2.9] - 2026-11-16
 
-> 本轮通过 **Pull Request**（stacked）提交，不直接合并 `main`，不发布 GitHub Release。
 > OPPO 系改动为静态实现，**无需实机验证**（维护者无 OPPO 设备）。
 
 ### 新增
@@ -86,7 +96,6 @@
 
 ## [0.2.8] - 2026-11-16
 
-> 本轮通过 **Pull Request** 提交，不直接合并 `main`，不发布 GitHub Release。
 
 ### 新增
 - **OPPO 引擎诊断**：provider `engine_state` / `getReport.engine` / `files/oppo_engine.json`（walletPackage、installedCount、attemptedCount、observedUrls、cardCount、replaceCount、missed[]），OpLog 记录 OPPO 初始化/hook 安装/URL 观察（脱敏）。
@@ -101,7 +110,6 @@
 
 ## [0.2.7] - 2026-11-16
 
-> 本轮以 **Pre-release** 发布。
 
 ### 新增
 - **关于页「导出诊断报告」**：一键收集设备信息、root 环境（su 路径/`su -c id`/getprop/SELinux）、LSPosed 与模块状态（lspctl）、钱包与开关状态（已安装钱包/激活钱包/卡片配置摘要，卡号仅保留后 4 位）、模块操作记录（最近 300 条）、异常摘要，写入 `/sdcard/Download/honor_cards_personality/logs/diagnostic_yyyyMMdd-HHmmss.txt`；无 root 时明确标注且不崩溃。
@@ -207,7 +215,8 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
-[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.13...HEAD
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.14...HEAD
+[0.2.14]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.13...v0.2.14
 [0.2.13]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.10...v0.2.11
