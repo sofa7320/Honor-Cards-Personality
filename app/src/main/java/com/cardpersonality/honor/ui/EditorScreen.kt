@@ -346,17 +346,37 @@ fun EditorScreen(
         if (saving) return
         saving = true
         scope.launch {
-            withContext(Dispatchers.IO) {
-                // Round 25 fix: the render happens inside saveCard, so apply the chosen quality
-                // (including when only the export slider changed) right before saving.
-                com.cardpersonality.honor.FaceRenderer.setExportScale(exportScale)
-                runCatching { FaceRepository.saveCard(ctx, target.key, cfg, target.walletPackage) }
-                // Round 23: explicit OPPO URL-fallback PUT using the card's reported faceUrl.
+            val saveOk = withContext(Dispatchers.IO) {
                 runCatching {
-                    com.cardpersonality.honor.ui.util.OppoFaceUrlPush.push(
-                        ctx, target.key, target.walletPackage, target.faceUrl,
-                    )
-                }
+                    // Round 25: render happens inside saveCard, so apply the chosen quality first.
+                    com.cardpersonality.honor.FaceRenderer.setExportScale(exportScale)
+                    FaceRepository.saveCard(ctx, target.key, cfg, target.walletPackage)
+                    // Round 23: explicit OPPO URL-fallback PUT using the card's reported faceUrl.
+                    runCatching {
+                        com.cardpersonality.honor.ui.util.OppoFaceUrlPush.push(
+                            ctx, target.key, target.walletPackage, target.faceUrl,
+                        )
+                    }
+                    // Round 26: verify the export actually rendered (background decode can fail on
+                    // huge images); never report success for an empty/failed card face.
+                    if (cfg.imagePath != null) {
+                        val export = FaceRepository.exportFileFor(
+                            ctx, target.key.type, target.key.id, target.walletPackage,
+                        )
+                        export != null && export.isFile && export.length() > 0L
+                    } else {
+                        true
+                    }
+                }.getOrDefault(false)
+            }
+            if (!saveOk) {
+                saving = false
+                Toast.makeText(
+                    ctx,
+                    "保存失败：卡面渲染失败，请重试或更换图片",
+                    Toast.LENGTH_LONG,
+                ).show()
+                return@launch
             }
             saving = false
             showExitDialog = false
@@ -364,7 +384,6 @@ fun EditorScreen(
             if (thenExit) onDone()
         }
     }
-
     // Wallet's current (unmodified) face for this card, used as a dimmed backdrop and as the
     // "以当前卡面为底图" source when no custom image is configured.
     LaunchedEffect(target.key, target.walletPackage, target.faceUrl) {
@@ -1242,6 +1261,7 @@ private fun OutputTab(
             defaultValue = 4f,
             valueRange = 1f..10f,
             keyPoints = listOf(1f, 2f, 3f, 4f, 5f, 6f, 8f, 10f),
+            showKeyPoints = false,
             unit = "x",
             onValueChange = { onExportScaleChange(it.roundToInt()) },
         )
@@ -2037,6 +2057,8 @@ private fun LabeledSlider(
     valueRange: ClosedFloatingPointRange<Float>,
     keyPoints: List<Float> = listOf(defaultValue),
     magnetThreshold: Float = 0.018f,
+    /** Hide the key-point dots (e.g. export quality uses a plain track). */
+    showKeyPoints: Boolean = true,
     /** Unit suffix used by the numeric-input dialog (e.g. "°", "%"). */
     unit: String = "",
     /** Displayed input = value * inputMultiplier (e.g. 100 for fractions). */
@@ -2167,7 +2189,7 @@ private fun LabeledSlider(
                         if (released) latestOnFinish?.invoke(lastValue)
                     }
                 },
-            showKeyPoints = true,
+            showKeyPoints = showKeyPoints,
             keyPoints = points,
             magnetThreshold = magnetThreshold,
             // We fire the key-point haptics ourselves (Miuix Step needs steps/snap points).
@@ -2490,6 +2512,9 @@ private fun List<StickerSpec>.move(from: Int, to: Int): List<StickerSpec> {
     list.add(to, item)
     return list
 }
+
+
+
 
 
 
