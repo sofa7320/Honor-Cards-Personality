@@ -73,6 +73,8 @@ import kotlin.math.roundToInt
 @Composable
 fun CardFacePreview(
     cfg: CardFaceConfig,
+    /** Optional live state: gestures update this without recomposing the whole editor. */
+    cfgState: androidx.compose.runtime.MutableState<CardFaceConfig>? = null,
     modifier: Modifier = Modifier,
     selectedStickerIdState: State<String?> = rememberUpdatedState(null),
     interactive: Boolean = true,
@@ -88,11 +90,12 @@ fun CardFacePreview(
     onCfgChange: (CardFaceConfig) -> Unit = {},
     onStickerSelected: (String?) -> Unit = {},
 ) {
+    val viewCfg = cfgState?.value ?: cfg
     val faceSpec = FaceGeometry.specFor(walletPackage)
     val radius: Dp = cornerRadius ?: faceSpec.cornerRadiusDp.dp
-    val image = rememberFaceImageBitmap(cfg.imagePath)
-    val backgroundImage = rememberFaceImageBitmap(backgroundImagePath)
-    val stickerBitmaps = rememberStickerBitmaps(cfg.stickers)
+    val image = rememberFaceImageBitmap(viewCfg.imagePath, 1280)
+    val backgroundImage = rememberFaceImageBitmap(backgroundImagePath, 1280)
+    val stickerBitmaps = rememberStickerBitmaps(viewCfg.stickers)
     val textMeasurer = rememberTextMeasurer(cacheSize = 64)
     val density = LocalDensity.current
     val colors = MiuixTheme.colorScheme
@@ -112,18 +115,40 @@ fun CardFacePreview(
     var activeRotationAnchor by remember { mutableStateOf<String?>(null) }
     val latestSnap by rememberUpdatedState(snapEnabled)
 
-    val latestCfg by rememberUpdatedState(cfg)
+    val latestCfg by rememberUpdatedState(viewCfg)
     val latestOnChange by rememberUpdatedState(onCfgChange)
     val latestOnSelect by rememberUpdatedState(onStickerSelected)
 
+    /**
+     * Round 27B: while a gesture is active, only the preview's own live state is updated; the
+     * editor's cfg is committed once on release. This keeps drag frames from recomposing the whole
+     * editor (tabs/dialogs) and removes the p50≈31ms jank.
+     */
+    fun applyLiveCfg(updated: CardFaceConfig) {
+        val state = cfgState
+        if (state != null) state.value = updated else latestOnChange(updated)
+    }
+
+    fun commitLiveCfg() {
+        val state = cfgState
+        if (state != null) latestOnChange(state.value)
+    }
+
+    // Round 27B: geometry-only changes (cx/cy/rot) must not re-measure stickers every frame.
+    val measureKey = viewCfg.stickers.joinToString("|") { spec ->
+        listOf(
+            spec.id, spec.kind, spec.text, spec.sizeDp, spec.w, spec.fontFamily,
+            spec.fontWeight, spec.italic, spec.underline, spec.customFontPath,
+        ).joinToString(",")
+    }
     val stickerBoxes: Map<String, Rect> = remember(
-        cfg.stickers, sizePx, stickerBitmaps, density.density, density.fontScale, faceSpec,
+        viewCfg.stickers, sizePx, stickerBitmaps, density.density, density.fontScale, faceSpec,
     ) {
         if (sizePx.width <= 0) {
             emptyMap()
         } else {
             buildStickerBoxes(
-                cfg.stickers,
+                viewCfg.stickers,
                 sizePx.width.toFloat(),
                 sizePx.height.toFloat(),
                 stickerBitmaps,
@@ -138,12 +163,12 @@ fun CardFacePreview(
 
     // Content size (canvas px, no selection padding) per sticker, for snapping calculations.
     val stickerSizes: Map<String, Pair<Float, Float>> = remember(
-        cfg.stickers, sizePx, stickerBitmaps, density.density, density.fontScale, faceSpec,
+        measureKey, sizePx, stickerBitmaps, density.density, density.fontScale, faceSpec,
     ) {
         if (sizePx.width <= 0) {
             emptyMap()
         } else {
-            cfg.stickers.associate { spec ->
+            viewCfg.stickers.associate { spec ->
                 spec.id to stickerContentSize(
                     spec,
                     sizePx.width.toFloat(),
@@ -194,7 +219,7 @@ fun CardFacePreview(
                 ?.takeIf { abs(cy - it) <= SNAP_RELEASE_THRESHOLD }
                 ?.let { cy = it }
             if (cx != spec.cx || cy != spec.cy) {
-                latestOnChange(
+                applyLiveCfg(
                     base.copy(
                         stickers = base.stickers.toMutableList().also {
                             it[idx] = spec.copy(cx = cx, cy = cy)
@@ -208,14 +233,14 @@ fun CardFacePreview(
             if (abs(oX) <= SNAP_RELEASE_THRESHOLD) oX = 0f
             if (abs(oY) <= SNAP_RELEASE_THRESHOLD) oY = 0f
             if (oX != base.offsetX || oY != base.offsetY) {
-                latestOnChange(base.copy(offsetX = oX, offsetY = oY))
+                applyLiveCfg(base.copy(offsetX = oX, offsetY = oY))
             }
         }
     }
 
     val gestureModifier = if (interactive) {
         Modifier
-            .pointerInput(image, cfg.stickers.size, snapEnabled) {
+            .pointerInput(image, viewCfg.stickers.size, snapEnabled) {
                 detectTransformGestures(panZoomLock = false) { centroid, pan, zoom, rotation ->
                     val base = latestCfg
                     val canvasW = size.width.toFloat()
@@ -311,7 +336,7 @@ fun CardFacePreview(
                                     rot = newRot,
                                 )
                             }
-                            latestOnChange(
+                            applyLiveCfg(
                                 base.copy(
                                     stickers = base.stickers.toMutableList().also { it[index] = updated },
                                 ),
@@ -348,7 +373,7 @@ fun CardFacePreview(
                         noteAnchor(anchorKey)
                         guideX = snapGuideX
                         guideY = snapGuideY
-                        latestOnChange(updated)
+                        applyLiveCfg(updated)
                     }
                 }
             }
@@ -368,7 +393,7 @@ fun CardFacePreview(
                                         if (abs(spec.rot - nearest90) <= ROTATION_RELEASE_SNAP &&
                                             abs(spec.rot - nearest90) > 0.01f
                                         ) {
-                                            latestOnChange(
+                                            applyLiveCfg(
                                                 latestCfg.copy(
                                                     stickers = latestCfg.stickers.map {
                                                         if (it.id == selected) {
@@ -393,17 +418,18 @@ fun CardFacePreview(
                             rotationUnlocked = false
                             activeRotationAnchor = null
                             finishSnap()
+                            commitLiveCfg()
                         }
                     }
                 }
             }
-            .pointerInput(cfg.stickers, image) {
+            .pointerInput(viewCfg.stickers, image) {
                 detectTapGestures(
                     onDoubleTap = {
                         if (selectedStickerIdState.value != null) {
                             latestOnSelect(null)
                         } else {
-                            latestOnChange(latestCfg.copy(scale = 1f, offsetX = 0f, offsetY = 0f))
+                            applyLiveCfg(latestCfg.copy(scale = 1f, offsetX = 0f, offsetY = 0f))
                         }
                     },
                     onTap = { position ->
@@ -470,17 +496,17 @@ fun CardFacePreview(
                     imageHeight = image.height.toFloat(),
                     canvasWidth = size.width,
                     canvasHeight = size.height,
-                    cfg = cfg,
+                    cfg = viewCfg,
                 )
                 val centerX = placement.dx + placement.destWidth / 2f
                 val centerY = placement.dy + placement.destHeight / 2f
                 withTransform({
-                    if (cfg.flipX || cfg.flipY) {
+                    if (viewCfg.flipX || viewCfg.flipY) {
                         // Mirror about the destination center, then apply cover placement.
                         translate(centerX, centerY)
                         scale(
-                            if (cfg.flipX) -1f else 1f,
-                            if (cfg.flipY) -1f else 1f,
+                            if (viewCfg.flipX) -1f else 1f,
+                            if (viewCfg.flipY) -1f else 1f,
                             Offset.Zero,
                         )
                         translate(-centerX, -centerY)
@@ -509,7 +535,7 @@ fun CardFacePreview(
             }
             val designScale = size.width / faceSpec.designWidth
             // List index 0 is the TOP-most layer -> draw in reverse so 0 lands on top.
-            for (spec in cfg.stickers.asReversed()) {
+            for (spec in viewCfg.stickers.asReversed()) {
                 if (!spec.visible) continue
                 when (spec.kind) {
                     StickerKind.IMAGE -> drawImageSticker(spec, stickerBitmaps)
@@ -521,7 +547,7 @@ fun CardFacePreview(
         // so changing the selection never redraws/recomposes the card content.
         SelectionOverlay(
             boxes = stickerBoxes,
-            stickers = cfg.stickers,
+            stickers = viewCfg.stickers,
             selectedState = selectedStickerIdState,
             guideX = guideX,
             guideY = guideY,
@@ -904,6 +930,11 @@ fun EmptyFacePlaceholder(
             ),
     )
 }
+
+
+
+
+
 
 
 

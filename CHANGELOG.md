@@ -3,7 +3,11 @@
 本文件记录「荣耀卡面工坊」的所有重要变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循语义化版本（`versionCode` 固定为 1，不随版本递增）。
 
+<<<<<<< Updated upstream
 ## 0.3.0 预发布系列（0.2.6 – 0.2.14）
+=======
+## 0.3.0 预发布系列（0.2.6 – 0.2.16）
+>>>>>>> Stashed changes
 
 > **0.3.0 正式发布时**，将把 0.2.6～0.2.12 的所有变更统一汇总为「自 0.2.5 以来的变更」写入 0.3.0 的发布说明与 CHANGELOG，届时本区间的逐版本条目保留为历史记录。
 
@@ -11,6 +15,33 @@
 
 （暂无）
 
+<<<<<<< Updated upstream
+=======
+## [0.2.16] - 2026-11-18
+
+### 性能
+- **Lanczos3 重写为流式低内存实现**：不再对整图分配 `FloatArray(sw*sh*4)`（此前 4K 图约 192MB、逐像素 pow）；改为逐行处理 + sRGB/线性 256/4096 项 LUT + 两级降采样（先整数 box 预缩到目标 2× 内再卷积）；异常自动降级 bilinear。
+- **按用途分级**：预览/缩略图不再使用 Lanczos（采样解码 + bilinear）；Lanczos 仅用于最终导出；新增 `ScaledFaceCache`（源文件 stamp + 目标尺寸，LRU 48MB）；解码按输出尺寸 cap、图片缓存改为 96MB 按字节预算。
+- **编辑器预览交互优化**：拖动/缩放/旋转只更新预览自有的 live state（不再每帧重组整个编辑器），松手一次性提交；避免每帧文字测量；预览纹理上限 1280/1024。
+- 实测（4K 背景 + 元素贴纸）：3x 保存 render 1,649/489ms → **296/228ms**，10x 保存从失败 → **2,162ms 成功**；编辑器 PSS 224,902KB → **~178,000KB**；预览拖动帧率 +50%，p50 21–25ms → **9–10ms**。
+
+### 修复
+- 高分辨率背景下保存偶发「背景丢失」：渲染解码失败重试；输出做纯色/空白抽样校验，失败拒绝写坏卡面并提示。
+- 导入背景图后预览偶尔不刷新：状态键加入文件 stamp，解码失败重试/降级。
+
+## [0.2.15] - 2026-11-17
+
+### 修复
+- **导入背景图片偶尔不显示**：预览状态键加入图片文件戳（mtime+size），覆盖导入即时刷新；解码失败增加重试与降级路径，不再静默。
+- **高分辨率背景 + 元素图片**：元素图按最终输出像素解码（清晰度恢复正常）；渲染耗时优化（背景按输出尺寸解码、Lanczos 仅必要层各一次、缓存复用、毫秒级 `render|timing` 日志）；渲染失败会重试并在输出纯色/空白校验失败时拒绝写坏卡面（提示保存失败）；高分辨率背景内存受控。
+- **OPPO 卡片重复**：同一张卡（wallet+type+faceUrl 相同）不再出现两条记录，优先保留 AID identity（`A0000…`），丢弃数字卡号/URL 回退 identity。
+- **OPPO 面板列表缩略图空白**：report 卡有 `faceUrl` 且无本地原图时，首页缩略图异步下载该 URL 并缓存；钱包侧新增 Fin* 自绘容器/根视图抓取（反射 Bitmap 字段或 `view.draw`）作为兜底。
+
+### 变更
+- **导出画质滑块不再显示关键点灰点**；保留倍率数值、预计输出尺寸与重置。
+- 版本 0.2.15，`versionCode` 固定 1。
+
+>>>>>>> Stashed changes
 ## [0.2.14] - 2026-11-17
 
 ### 新增
@@ -215,7 +246,13 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
+<<<<<<< Updated upstream
 [Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.14...HEAD
+=======
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.16...HEAD
+[0.2.16]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.15...v0.2.16
+[0.2.15]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.14...v0.2.15
+>>>>>>> Stashed changes
 [0.2.14]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.13...v0.2.14
 [0.2.13]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.11...v0.2.12
