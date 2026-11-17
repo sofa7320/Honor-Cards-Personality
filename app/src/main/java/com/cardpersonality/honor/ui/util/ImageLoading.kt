@@ -45,7 +45,7 @@ fun rememberStickerBitmaps(stickers: List<StickerSpec>): Map<String, ImageBitmap
         value = withContext(Dispatchers.IO) {
             val out = HashMap<String, ImageBitmap>(paths.size)
             for ((id, path) in paths) {
-                FaceImageDecoder.decode(path, 2048)?.let { out[id] = it.asImageBitmap() }
+                FaceImageDecoder.decode(path, 1024)?.let { out[id] = it.asImageBitmap() }
             }
             out
         }
@@ -87,5 +87,6 @@ internal object FaceImageDecoder {
         }
     }
 }
+
 
 

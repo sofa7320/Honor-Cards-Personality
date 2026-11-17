@@ -226,6 +226,12 @@ fun EditorScreen(
     }
     var cfg by remember(target.key) { mutableStateOf(initial) }
     var baseline by remember(target.key) { mutableStateOf(initial) }
+    // Round 27B: live preview state — gestures update only this (no whole-editor recomposition);
+    // committed back to cfg once the finger lifts.
+    val previewCfgState = remember(target.key) { mutableStateOf(initial) }
+    LaunchedEffect(cfg) {
+        if (previewCfgState.value != cfg) previewCfgState.value = cfg
+    }
     // Selection is kept in a State object that ONLY the preview/Elements wrappers read, so a tap
     // on a sticker does not recompose the whole editor (image tab, dialogs, etc.).
     val selectedSticker = remember { mutableStateOf<String?>(null) }
@@ -654,6 +660,7 @@ fun EditorScreen(
                     PreviewWithSelection(
                         selectedState = selectedSticker,
                         cfg = cfg,
+                        cfgState = previewCfgState,
                         walletPackage = target.walletPackage,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1875,6 +1882,7 @@ private fun FontPickerDialogBody(
 private fun PreviewWithSelection(
     selectedState: State<String?>,
     cfg: CardFaceConfig,
+    cfgState: androidx.compose.runtime.MutableState<CardFaceConfig>? = null,
     modifier: Modifier = Modifier,
     walletPackage: String? = null,
     backgroundImagePath: String? = null,
@@ -1884,6 +1892,7 @@ private fun PreviewWithSelection(
 ) {
     CardFacePreview(
         cfg = cfg,
+        cfgState = cfgState,
         modifier = modifier,
         selectedStickerIdState = selectedState,
         walletPackage = walletPackage,
@@ -2512,6 +2521,8 @@ private fun List<StickerSpec>.move(from: Int, to: Int): List<StickerSpec> {
     list.add(to, item)
     return list
 }
+
+
 
 
 
