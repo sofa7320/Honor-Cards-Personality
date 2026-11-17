@@ -35,6 +35,10 @@ fun CardPersonalityApp() {
         val ctx = LocalContext.current
         var editorTarget by remember { mutableStateOf<EditorTarget?>(null) }
         var showAbout by remember { mutableStateOf(false) }
+        // Round 28: keep the Home snapshot + scroll position across editor navigation so returning
+        // does not reload/rebuild the list or flash a loading state.
+        var homeSnapshot by remember { mutableStateOf<HomeSnapshot?>(null) }
+        val homeListState = androidx.compose.foundation.lazy.rememberLazyListState()
         val target = editorTarget
 
         // Round 12: system back from About returns to the app's Home screen, not the launcher.
@@ -85,9 +89,14 @@ fun CardPersonalityApp() {
                         ctx = ctx,
                         onOpenEditor = { editorTarget = it },
                         onOpenAbout = { showAbout = true },
+                        initialSnapshot = homeSnapshot,
+                        onSnapshot = { homeSnapshot = it },
+                        listState = homeListState,
                     )
                 }
             }
         }
     }
 }
+
+

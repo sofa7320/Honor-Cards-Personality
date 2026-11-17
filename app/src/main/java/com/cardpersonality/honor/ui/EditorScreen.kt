@@ -262,7 +262,9 @@ fun EditorScreen(
     var importZipRunning by remember { mutableStateOf(false) }
     var renameStickerId by remember { mutableStateOf<String?>(null) }
     var colorPickerRequest by remember { mutableStateOf<ColorPickerRequest?>(null) }
-    var tabAnimInitialised by remember { mutableStateOf(false) }
+    // Per-tab scroll state only (no transition animation — tabs switch instantly).
+    val tabScrolls = remember { mutableStateMapOf<Int, ScrollState>() }
+    val contentScroll = tabScrolls.getOrPut(tab) { ScrollState(0) }
 
     // Round 23: wallet-native custom faces (e.g. Honor access cards) must show up in the panel
     // immediately. On editor open, invalidate + re-capture the wallet-original snapshot for cards
@@ -289,19 +291,6 @@ fun EditorScreen(
     /** Applies [block] to the sticker with [id] inside the working config. */
     fun updateSticker(id: String, block: (StickerSpec) -> StickerSpec) {
         cfg = cfg.copy(stickers = cfg.stickers.map { if (it.id == id) block(it) else it })
-    }
-
-    // Fade-only tab transition (no translation of the scroll container) with per-tab scroll state.
-    val tabEnter = remember { Animatable(1f) }
-    val tabScrolls = remember { mutableStateMapOf<Int, ScrollState>() }
-    val contentScroll = tabScrolls.getOrPut(tab) { ScrollState(0) }
-    LaunchedEffect(tab) {
-        if (!tabAnimInitialised) {
-            tabAnimInitialised = true
-            return@LaunchedEffect
-        }
-        tabEnter.snapTo(0f)
-        tabEnter.animateTo(1f, tween(durationMillis = 130))
     }
 
     /**
@@ -775,11 +764,7 @@ fun EditorScreen(
                 // background (the dark Miuix "background" color is lighter than the page black and
                 // showed up as a stray gray rectangle under the preview).
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .graphicsLayer {
-                            alpha = tabEnter.value
-                        },
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
                     when (tab) {
                         0 -> ImageTab(
@@ -2521,6 +2506,8 @@ private fun List<StickerSpec>.move(from: Int, to: Int): List<StickerSpec> {
     list.add(to, item)
     return list
 }
+
+
 
 
 
