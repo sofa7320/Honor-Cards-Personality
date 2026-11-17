@@ -687,14 +687,9 @@ object OppoFaceHookEngine {
      */
     private fun resolveReplacement(identity: CardIdentity, url: String): String? {
         return try {
-            // identity first; on mismatch fall back to the exact source URL the panel pushed with PUT.
-            val face = OppoBridge.resolveFace(identity) ?: OppoBridge.resolveFaceByUrl(url)
-            if (face == null) {
-                OppoBridge.oplog("oppo", "replace-miss", "id=${identity.id} url=${maskUrl(url)}")
-                return null
-            }
+            val face = OppoBridge.resolveFace(identity) ?: return null
             bumpSource("file")
-            OppoBridge.oplog("oppo", "replace-hit", "id=${identity.id} key=${face.fileKey}")
+            OppoBridge.oplog("oppo", "file-replace", "url=${maskUrl(url)} id=${identity.id} file=${face.file.name}")
             "file://" + face.file.absolutePath
         } catch (t: Throwable) {
             OppoBridge.oplog("oppo", "file-replace-fail", t.javaClass.simpleName)
@@ -859,7 +854,7 @@ object OppoFaceHookEngine {
 
     private fun customBitmap(url: String): Bitmap? {
         val identity = lookupIdentity(null, url) ?: return null
-        val face = OppoBridge.resolveFace(identity) ?: OppoBridge.resolveFaceByUrl(url) ?: return null
+        val face = OppoBridge.resolveFace(identity) ?: return null
         val key = face.fileKey + "@" + face.version
         bitmapCache[key]?.let { if (!it.isRecycled) return it }
         return try {

@@ -101,7 +101,6 @@ fun HomeScreen(
     var walletSnapshot by remember { mutableStateOf<WalletsSnapshot?>(null) }
     var oppoEngineStatus by remember { mutableStateOf<OppoEngineStatus?>(null) }
     var exportingDiagnostics by remember { mutableStateOf(false) }
-    var refreshOriginalsOnResume by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val walletPackagesText = remember(detectedWallets, walletSnapshot) {
         val installed = walletSnapshot?.installedPackages?.takeIf { it.isNotEmpty() }
@@ -116,12 +115,7 @@ fun HomeScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                // Round 23: coming back from the wallet may mean the user changed a card face
-                // natively there (e.g. Honor access card). Invalidate uncustomized snapshots.
-                refreshOriginalsOnResume = true
-                reloadKey++
-            }
+            if (event == Lifecycle.Event.ON_RESUME) reloadKey++
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -136,20 +130,6 @@ fun HomeScreen(
                     com.cardpersonality.honor.data.bridge.PanelBridgeServer.ensureStarted(ctx)
                 }
                 cards = FaceRepository.cards(ctx).filterNot { isPlaceholderCard(it) }
-                if (refreshOriginalsOnResume) {
-                    refreshOriginalsOnResume = false
-                    cards.forEach { card ->
-                        if (card.key.id != CardKey.TYPE_DEFAULT_ID &&
-                            !FaceRepository.hasCustomFace(
-                                ctx, card.key.type, card.key.id, card.walletPackage,
-                            )
-                        ) {
-                            com.cardpersonality.honor.ui.util.OriginalSnapshotRefresh.refreshIfNeeded(
-                                ctx, card.key.type, card.key.id,
-                            )
-                        }
-                    }
-                }
                 reportUpdatedAt = FaceRepository.reportUpdatedAt(ctx)
                 storeVersion = FaceRepository.storeVersion(ctx)
                 bridgeReportVersion = runCatching {
@@ -692,7 +672,6 @@ private fun DetectedCardRow(
                     subtitle = card.subtitle.ifBlank { CardTypes.displayName(card.type) },
                     appElementIds = card.appElementIds,
                     walletPackage = cardWallet,
-                    faceUrl = card.faceUrl,
                 ),
             )
         },
@@ -1041,8 +1020,6 @@ private fun formatTime(millis: Long): String {
         ""
     }
 }
-
-
 
 
 

@@ -1242,21 +1242,11 @@ object FaceRepository {
             com.cardpersonality.honor.data.bridge.PanelBridgeServer.pushConfig(ctx, configJson)
             val keys = runCatching { org.json.JSONObject(configJson).optJSONObject("cards")?.length() ?: 0 }.getOrDefault(0)
             OpLog.record(ctx, "bridge", "push-config", "wallet=$wallet keys=$keys")
-            // Round-23: the wallet's original face URL lets it match by exact source URL even when
-            // the reported identity differs from the rendered NFC identity (friend-module approach).
-            val faceUrl = try {
-                cards(ctx).firstOrNull {
-                    it.key.type == key.type && it.key.id == key.id && it.walletPackage == wallet
-                }?.faceUrl
-            } catch (_: Throwable) {
-                null
-            }
             com.cardpersonality.honor.data.bridge.PanelBridgeServer.pushFace(
                 ctx,
                 scoped,
                 cfg.version,
                 export.readBytes(),
-                faceUrl,
             )
             OpLog.record(ctx, "bridge", "push-face", "key=$scoped wallet=$wallet v=${cfg.version}")
         } catch (_: Throwable) {
