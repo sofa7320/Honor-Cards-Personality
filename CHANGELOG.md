@@ -3,7 +3,11 @@
 本文件记录「荣耀卡面工坊」的所有重要变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循语义化版本（`versionCode` 固定为 1，不随版本递增）。
 
+<<<<<<< Updated upstream
 ## 0.3.0 预发布系列（0.2.6 – 0.2.17）
+=======
+## 0.3.0 预发布系列（0.2.6 – 0.2.19）
+>>>>>>> Stashed changes
 
 > **0.3.0 正式发布时**，将把 0.2.6～0.2.12 的所有变更统一汇总为「自 0.2.5 以来的变更」写入 0.3.0 的发布说明与 CHANGELOG，届时本区间的逐版本条目保留为历史记录。
 
@@ -11,6 +15,28 @@
 
 （暂无）
 
+<<<<<<< Updated upstream
+=======
+## [0.2.19] - 2026-11-18
+
+### 性能
+- **预览拖动专项优化（依据 framestats 定位：UI 线程为瓶颈、GPU 非瓶颈）**：
+  - 预览改为**离屏合成缓存 Bitmap**（背景 + 静态贴纸按预览像素一次性渲染，仅在样式/尺寸/选中项变化时重建）；拖动中每帧只绘制缓存图 + 当前拖动贴纸（矩阵变换），不再重绘大背景/全部贴纸/文字。
+  - 拖动期间跳过 sticker 尺寸测量、文字重排与多余几何计算；选择框用 live 矩形直接绘制。
+  - 预览图片按显示尺寸缓存，缩放/旋转只做矩阵变换；draw 路径复用 Paint/Rect，减少每帧分配。
+  - 松手提交时才重建缓存一次。
+- 新增 `CARD_PERSONALITY_PERF preview|frame` 类日志便于后续定位。
+
+## [0.2.18] - 2026-11-18
+
+### 修复
+- **编辑页返回主页出现双层滑动动画**：`AnimatedContent` 的 targetState 改为稳定 screen key（`editor:<fileKey>` / `__about__` / `__home__`），转场方向只依赖 key；Home 快照/数据更新不再触发转场，返回只播放一次「编辑页→主页」滑动。
+
+### 性能
+- 预览拖动不再触发重组：composition 只读父级配置，手势 live state 仅在 **draw 阶段**读取（Canvas 绘制 + 选择框 live 重算），松手一次性提交。
+- 10x 保存内存进一步下降：`renderToFile` 结束后清理 `ScaledFaceCache`，图片缓存 LRU 64→**32MB**，避免解码/缩放/输出三份大 bitmap 长期共存。
+
+>>>>>>> Stashed changes
 ## [0.2.17] - 2026-11-18
 
 ### 修复
@@ -249,7 +275,13 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
+<<<<<<< Updated upstream
 [Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.17...HEAD
+=======
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.19...HEAD
+[0.2.19]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.18...v0.2.19
+[0.2.18]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.17...v0.2.18
+>>>>>>> Stashed changes
 [0.2.17]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.16...v0.2.17
 [0.2.16]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.15...v0.2.16
 [0.2.15]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.14...v0.2.15

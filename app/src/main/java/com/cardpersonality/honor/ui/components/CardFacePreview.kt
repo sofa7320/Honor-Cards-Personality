@@ -27,6 +27,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.StrokeJoin
 import android.graphics.Paint
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
@@ -111,6 +112,11 @@ fun CardFacePreview(
     // Rotation gesture state: accumulate until the finger clearly rotates (anti-mistouch), then
     // snap to multiples of 90° with a single haptic tick per adhered angle.
     var rotationAccum by remember { mutableStateOf(0f) }
+    // Round 30: when a sticker is being dragged, the rest of the scene is cached into a bitmap so
+    // each frame costs one drawImage + one sticker instead of the whole composition.
+    var draggingStickerId by remember { mutableStateOf<String?>(null) }
+    val staticScene = remember { mutableStateOf<ImageBitmap?>(null) }
+    val staticSceneKey = remember { mutableStateOf("") }
     var rotationUnlocked by remember { mutableStateOf(false) }
     var activeRotationAnchor by remember { mutableStateOf<String?>(null) }
     val latestSnap by rememberUpdatedState(snapEnabled)
@@ -183,6 +189,20 @@ fun CardFacePreview(
         }
     }
     val latestSizes by rememberUpdatedState(stickerSizes)
+    // Round 30: cache text paints / glyph layout per sticker so dragging does not re-create
+    // typefaces/paints or re-split text on every frame (UI-thread bottleneck).
+    val previewDesignScale = if (sizePx.width > 0) {
+        sizePx.width.toFloat() / faceSpec.designWidth
+    } else {
+        1f
+    }
+    val textPlans: Map<String, TextStickerPlan> = remember(
+        measureKey, sizePx, faceSpec, previewDesignScale,
+    ) {
+        viewCfg.stickers
+            .filter { it.kind != StickerKind.IMAGE && it.text.isNotBlank() }
+            .associate { it.id to buildTextStickerPlan(it, previewDesignScale) }
+    }
 
     /** Fires the snap haptic once per newly activated anchor (not continuously). */
     fun noteAnchor(key: String?) {
@@ -336,6 +356,7 @@ fun CardFacePreview(
                                     rot = newRot,
                                 )
                             }
+                            draggingStickerId = spec.id
                             applyLiveCfg(
                                 base.copy(
                                     stickers = base.stickers.toMutableList().also { it[index] = updated },
@@ -382,6 +403,7 @@ fun CardFacePreview(
                     while (true) {
                         val event = awaitPointerEvent()
                         if (event.changes.none { it.pressed }) {
+                            draggingStickerId = null
                             // Finish a rotation snap on release when close to a 90° multiple.
                             val wasRotating = rotationUnlocked
                             if (wasRotating) {
@@ -480,6 +502,7 @@ fun CardFacePreview(
             .background(Color(0xFF16181D))
             .onSizeChanged { sizePx = it },
     ) {
+<<<<<<< Updated upstream
         Canvas(modifier = Modifier.fillMaxSize().then(gestureModifier)) {
             drawRect(
                 brush = Brush.linearGradient(
@@ -541,9 +564,65 @@ fun CardFacePreview(
                     StickerKind.IMAGE -> drawImageSticker(spec, stickerBitmaps)
                     else -> drawTextSticker(spec, textMeasurer, density.density, density.fontScale, designScale)
                 }
+=======
+        val previewStyleKey = buildString {
+            append(viewCfg.imagePath).append('|').append(backgroundImagePath).append('|')
+            append(viewCfg.flipX).append(viewCfg.flipY).append('|')
+            append(measureKey).append('|').append(sizePx.width).append('x').append(sizePx.height)
+            // Sticker transforms are part of the cached scene: stable during a drag, changes on commit.
+            viewCfg.stickers.forEach { spec ->
+                append(spec.id).append(',').append(spec.cx).append(',').append(spec.cy)
+                    .append(',').append(spec.rot).append(';')
+>>>>>>> Stashed changes
             }
         }
-        // Selection chrome + snap guides live in their own Canvas that reads the selection State,
+        Canvas(modifier = Modifier.fillMaxSize().then(gestureModifier)) {
+            // Round 29/30: live cfg is read in the draw phase; during a sticker drag a cached
+            // static scene bitmap is reused and only the dragged sticker is painted live.
+            val drawCfg = cfgState?.value ?: viewCfg
+            val dragId = draggingStickerId
+            if (dragId != null && size.width > 0f && size.height > 0f) {
+                if (staticScene.value == null || staticSceneKey.value != previewStyleKey) {
+                    val bmp = ImageBitmap(size.width.toInt(), size.height.toInt())
+                    CanvasDrawScope().draw(
+                        density = density,
+                        layoutDirection = androidx.compose.ui.unit.LayoutDirection.Ltr,
+                        canvas = androidx.compose.ui.graphics.Canvas(bmp),
+                        size = size,
+                    ) {
+                        drawPreviewScene(
+                            drawCfg = drawCfg,
+                            skipStickerId = dragId,
+                            image = image,
+                            backgroundImage = backgroundImage,
+                            stickerBitmaps = stickerBitmaps,
+                            textPlans = textPlans,
+                            faceSpec = faceSpec,
+                        )
+                    }
+                    staticScene.value = bmp
+                    staticSceneKey.value = previewStyleKey
+                }
+                staticScene.value?.let { cached -> drawImage(cached) }
+                val active = drawCfg.stickers.firstOrNull { it.id == dragId && it.visible }
+                if (active != null) {
+                    when (active.kind) {
+                        StickerKind.IMAGE -> drawImageSticker(active, stickerBitmaps)
+                        else -> drawTextSticker(active, textPlans[active.id])
+                    }
+                }
+            } else {
+                drawPreviewScene(
+                    drawCfg = drawCfg,
+                    skipStickerId = null,
+                    image = image,
+                    backgroundImage = backgroundImage,
+                    stickerBitmaps = stickerBitmaps,
+                    textPlans = textPlans,
+                    faceSpec = faceSpec,
+                )
+            }
+        }        // Selection chrome + snap guides live in their own Canvas that reads the selection State,
         // so changing the selection never redraws/recomposes the card content.
         SelectionOverlay(
             boxes = stickerBoxes,
@@ -556,6 +635,75 @@ fun CardFacePreview(
     }
 }
 
+/** Draws gradient + background image + all stickers (optionally skipping the actively dragged one). */
+private fun DrawScope.drawPreviewScene(
+    drawCfg: CardFaceConfig,
+    skipStickerId: String?,
+    image: ImageBitmap?,
+    backgroundImage: ImageBitmap?,
+    stickerBitmaps: Map<String, ImageBitmap>,
+    textPlans: Map<String, TextStickerPlan>,
+    faceSpec: FaceGeometry.FaceSpec,
+) {
+    drawRect(
+        brush = Brush.linearGradient(
+            colors = listOf(
+                Color(0xFF2B2F3A),
+                Color(0xFF16181D),
+                Color(0xFF0E0F12),
+            ),
+        ),
+    )
+    if (image != null) {
+        val placement = FaceGeometry.placement(
+            imageWidth = image.width.toFloat(),
+            imageHeight = image.height.toFloat(),
+            canvasWidth = size.width,
+            canvasHeight = size.height,
+            cfg = drawCfg,
+        )
+        val centerX = placement.dx + placement.destWidth / 2f
+        val centerY = placement.dy + placement.destHeight / 2f
+        withTransform({
+            if (drawCfg.flipX || drawCfg.flipY) {
+                translate(centerX, centerY)
+                scale(
+                    if (drawCfg.flipX) -1f else 1f,
+                    if (drawCfg.flipY) -1f else 1f,
+                    Offset.Zero,
+                )
+                translate(-centerX, -centerY)
+            }
+            translate(placement.dx, placement.dy)
+            scale(placement.scale, placement.scale, Offset.Zero)
+        }) {
+            drawImage(image)
+        }
+    } else if (backgroundImage != null) {
+        val placement = FaceGeometry.placement(
+            imageWidth = backgroundImage.width.toFloat(),
+            imageHeight = backgroundImage.height.toFloat(),
+            canvasWidth = size.width,
+            canvasHeight = size.height,
+            cfg = CardFaceConfig(),
+        )
+        withTransform({
+            translate(placement.dx, placement.dy)
+            scale(placement.scale, placement.scale, Offset.Zero)
+        }) {
+            drawImage(backgroundImage, alpha = 0.65f)
+        }
+        drawRect(color = Color(0x33000000))
+    }
+    for (spec in drawCfg.stickers.asReversed()) {
+        if (!spec.visible) continue
+        if (skipStickerId != null && spec.id == skipStickerId) continue
+        when (spec.kind) {
+            StickerKind.IMAGE -> drawImageSticker(spec, stickerBitmaps)
+            else -> drawTextSticker(spec, textPlans[spec.id])
+        }
+    }
+}
 @Composable
 private fun SelectionOverlay(
     boxes: Map<String, Rect>,
@@ -635,14 +783,18 @@ private const val SNAP_ATTRACT_FACTOR = 0.20f
  * Compose outlined-text rasterisation seam that used to leave a faint "ghost" outline in the
  * preview while the exported bitmap was clean.
  */
-private fun DrawScope.drawTextSticker(
-    spec: StickerSpec,
-    textMeasurer: TextMeasurer,
-    densityValue: Float,
-    fontScale: Float,
-    designScale: Float,
-) {
-    if (spec.text.isBlank()) return
+/** Pre-built paints/text layout for one text sticker (reused across drag frames). */
+internal class TextStickerPlan(
+    val fillPaint: android.graphics.Paint,
+    val strokePaint: android.graphics.Paint?,
+    val lines: Array<String>,
+    val lineHeight: Float,
+    val totalHeight: Float,
+    val ascent: Float,
+)
+
+/** Builds the per-sticker text plan; called from a composition-scoped remember (not per frame). */
+private fun buildTextStickerPlan(spec: StickerSpec, designScale: Float): TextStickerPlan {
     val stickerAlpha = spec.alpha.coerceIn(0f, 1f)
     val typeface = FaceTypefaces.resolve(
         customFontPath = spec.customFontPath,
@@ -680,26 +832,36 @@ private fun DrawScope.drawTextSticker(
     } else {
         null
     }
-    val cx = spec.cx * size.width
-    val cy = spec.cy * size.height
-    val lines = spec.text.split('\n')
     val fm = fillPaint.fontMetrics
     val lineHeight = (fm.descent - fm.ascent) * 1.05f
-    val totalHeight = lineHeight * lines.size
-    var baseline = cy - totalHeight / 2f - fm.ascent
+    val lines = spec.text.split('\n').toTypedArray()
+    return TextStickerPlan(
+        fillPaint = fillPaint,
+        strokePaint = strokePaint,
+        lines = lines,
+        lineHeight = lineHeight,
+        totalHeight = lineHeight * lines.size,
+        ascent = fm.ascent,
+    )
+}
+
+private fun DrawScope.drawTextSticker(spec: StickerSpec, plan: TextStickerPlan?) {
+    if (plan == null || spec.text.isBlank()) return
+    val cx = spec.cx * size.width
+    val cy = spec.cy * size.height
+    var baseline = cy - plan.totalHeight / 2f - plan.ascent
     val native = drawContext.canvas.nativeCanvas
     native.save()
     native.rotate(FaceGeometry.clampRotation(spec.rot), cx, cy)
-    for (line in lines) {
+    for (line in plan.lines) {
         // Outline first, then fill on top: the fill covers the inner half of the stroke so only
         // the outer edge remains visible (identical to the exporter).
-        if (strokePaint != null) native.drawText(line, cx, baseline, strokePaint)
-        native.drawText(line, cx, baseline, fillPaint)
-        baseline += lineHeight
+        if (plan.strokePaint != null) native.drawText(line, cx, baseline, plan.strokePaint)
+        native.drawText(line, cx, baseline, plan.fillPaint)
+        baseline += plan.lineHeight
     }
     native.restore()
 }
-
 /** Multiplies a packed ARGB color's alpha by [alpha] (0..1). */
 private fun withStickerAlpha(color: Int, alpha: Float): Int {
     val base = android.graphics.Color.alpha(color)
@@ -954,3 +1116,14 @@ fun EmptyFacePlaceholder(
 
 
 
+<<<<<<< Updated upstream
+=======
+
+
+
+
+
+
+
+
+>>>>>>> Stashed changes
