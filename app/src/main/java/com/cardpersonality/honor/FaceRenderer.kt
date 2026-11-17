@@ -1,5 +1,7 @@
 package com.cardpersonality.honor
 
+import android.util.Log
+
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -395,6 +397,17 @@ object FaceImageLoader {
         return File(base, path).absolutePath
     }
 
+    /** Cheap change token for a source file (mtime + size); used as a preview state key. */
+    fun fileStamp(path: String?): Long {
+        if (path.isNullOrEmpty()) return 0L
+        return try {
+            val f = File(path)
+            if (!f.isFile) 0L else f.lastModified() * 31L + f.length()
+        } catch (_: Throwable) {
+            0L
+        }
+    }
+
     /** Drops cached decodes of [path] (any maxDimension) so an updated file is re-read. */
     fun evict(path: String?) {
         if (path.isNullOrEmpty()) return
@@ -540,12 +553,28 @@ object FaceRenderer {
             size.width to size.height
         }
         if (w <= 0 || h <= 0) return null
+        val started = System.nanoTime()
         return try {
             val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
-            draw(ctx, cfg, canvas, w.toFloat(), h.toFloat(), spec.designWidth, spec.designHeight)
-            bitmap
-        } catch (_: Throwable) {
+            val drewBackground = draw(
+                ctx, cfg, canvas, w.toFloat(), h.toFloat(), spec.designWidth, spec.designHeight,
+            )
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+            Log.i(
+                "CARD_PERSONALITY_PERF",
+                "render|timing size=${w}x$h bg=${cfg.imagePath != null} drewBg=$drewBackground ms=$elapsedMs stickers=${cfg.stickers.size}",
+            )
+            if (cfg.imagePath != null && !drewBackground) {
+                // Round 26: never export a background-less card (elements-only artifact).
+                Log.e("CARD_PERSONALITY_PERF", "render aborted: background decode failed path=${cfg.imagePath}")
+                bitmap.recycle()
+                null
+            } else {
+                bitmap
+            }
+        } catch (t: Throwable) {
+            Log.e("CARD_PERSONALITY_PERF", "render failed", t)
             null
         }
     }
@@ -560,17 +589,30 @@ object FaceRenderer {
         walletPackage: String? = null,
     ): Boolean {
         val bitmap = render(ctx, cfg, width, height, walletPackage) ?: return false
+        // Round 26: reject a blank output (e.g. background silently missing) instead of writing a
+        // corrupted card face.
+        if (cfg.imagePath != null && !hasVisualVariation(bitmap)) {
+            Log.e("CARD_PERSONALITY_PERF", "render aborted: output looks blank path=${cfg.imagePath}")
+            bitmap.recycle()
+            return false
+        }
         return try {
+            val started = System.nanoTime()
             outFile.parentFile?.mkdirs()
             val tmp = File(outFile.absolutePath + ".tmp")
             FileOutputStream(tmp).use { out ->
                 bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
                 out.flush()
             }
-            tmp.renameTo(outFile) || run {
+            val renamed = tmp.renameTo(outFile) || run {
                 outFile.delete()
                 tmp.renameTo(outFile)
             }
+            Log.i(
+                "CARD_PERSONALITY_PERF",
+                "render|timing jpeg bytes=${outFile.length()} ms=${(System.nanoTime() - started) / 1_000_000}",
+            )
+            renamed
         } catch (_: Throwable) {
             false
         } finally {
@@ -587,7 +629,8 @@ object FaceRenderer {
         height: Float,
         designWidth: Float = FaceGeometry.DESIGN_WIDTH,
         designHeight: Float = FaceGeometry.DESIGN_HEIGHT,
-    ) {
+    ): Boolean {
+        var drewBackground = false
         // 1. background
         bgPaint.shader = LinearGradient(
             0f, 0f, width, height,
@@ -600,8 +643,19 @@ object FaceRenderer {
 
         // 2. source image (cover fit + user zoom/pan)
         val imagePath = FaceImageLoader.resolvePath(ctx, cfg.imagePath)
-        val image = FaceImageLoader.load(imagePath)
+        // Round 26: cap the decoded size near the output size (avoid OOM on 8K photos), and retry
+        // with a fresh full decode when the cached/sampled decode fails (background loss bug).
+        val decodeCap = max(width.toInt(), height.toInt())
+            .let { (it * 1.25f).toInt() }
+            .coerceIn(1024, 4096)
+        var image = FaceImageLoader.load(imagePath, decodeCap)
+        if (image == null && !imagePath.isNullOrEmpty()) {
+            FaceImageLoader.evict(imagePath)
+            image = FaceImageLoader.load(imagePath, 4096)
+            Log.e("CARD_PERSONALITY_PERF", "render|background decode retry path=$imagePath cap=$decodeCap -> ${image != null}")
+        }
         if (image != null && !image.isRecycled && image.width > 0 && image.height > 0) {
+            drewBackground = true
             val p = FaceGeometry.placement(
                 image.width.toFloat(), image.height.toFloat(), width, height, cfg,
             )
@@ -647,6 +701,7 @@ object FaceRenderer {
                 else -> drawTextSticker(canvas, spec, width, height, designScale)
             }
         }
+        return drewBackground
     }
 
     private fun drawTextSticker(
@@ -722,9 +777,12 @@ object FaceRenderer {
         height: Float,
     ) {
         val path = FaceImageLoader.resolvePath(ctx, spec.imagePath) ?: return
-        val image = FaceImageLoader.load(path, 1536) ?: return
-        if (image.isRecycled || image.width <= 0) return
         val dstW = (spec.w.coerceIn(0.05f, 2f) * width).coerceAtLeast(8f)
+        // Round 26: decode stickers at the resolution the final output actually needs (was a fixed
+        // 1536 px -> blurry when a sticker covers a large part of a high-res export).
+        val stickerCap = (dstW * 1.5f).toInt().coerceIn(1024, 4096)
+        val image = FaceImageLoader.load(path, stickerCap) ?: return
+        if (image.isRecycled || image.width <= 0) return
         val dstH = dstW * image.height / image.width
         val cx = spec.cx * width
         val cy = spec.cy * height
@@ -745,8 +803,6 @@ object FaceRenderer {
             (cy + dstH / 2f).toInt(),
         )
         if (dst.width() > 0 && dst.height() > 0) {
-<<<<<<< Updated upstream
-=======
             val base = if (image.width > dst.width() + 1 || image.height > dst.height() + 1) {
                 runCatching {
                     Bitmap.createScaledBitmap(image, dst.width(), dst.height(), true)
@@ -754,16 +810,48 @@ object FaceRenderer {
             } else {
                 image
             }
->>>>>>> Stashed changes
             val alpha = (spec.alpha.coerceIn(0f, 1f) * 255f).toInt()
+            val src = Rect(0, 0, base.width, base.height)
             if (alpha >= 255) {
-                canvas.drawBitmap(image, Rect(0, 0, image.width, image.height), dst, bitmapPaint)
+                canvas.drawBitmap(base, src, dst, bitmapPaint)
             } else {
                 val paint = Paint(bitmapPaint).apply { this.alpha = alpha }
-                canvas.drawBitmap(image, Rect(0, 0, image.width, image.height), dst, paint)
+                canvas.drawBitmap(base, src, dst, paint)
             }
         }
         canvas.restore()
+    }
+
+    /** Cheap blank-image check: samples a grid and requires some colour variance. */
+    private fun hasVisualVariation(bitmap: Bitmap): Boolean {
+        if (bitmap.width <= 0 || bitmap.height <= 0) return false
+        var minR = 255
+        var maxR = 0
+        var minG = 255
+        var maxG = 0
+        var minB = 255
+        var maxB = 0
+        val stepX = (bitmap.width / 16).coerceAtLeast(1)
+        val stepY = (bitmap.height / 16).coerceAtLeast(1)
+        var y = stepY / 2
+        while (y < bitmap.height) {
+            var x = stepX / 2
+            while (x < bitmap.width) {
+                val color = bitmap.getPixel(x, y)
+                val r = (color ushr 16) and 0xFF
+                val g = (color ushr 8) and 0xFF
+                val b = color and 0xFF
+                if (r < minR) minR = r
+                if (r > maxR) maxR = r
+                if (g < minG) minG = g
+                if (g > maxG) maxG = g
+                if (b < minB) minB = b
+                if (b > maxB) maxB = b
+                x += stepX
+            }
+            y += stepY
+        }
+        return (maxR - minR) + (maxG - minG) + (maxB - minB) > 24
     }
 
     /** Multiplies an ARGB colour's alpha by [factor] (0..1). */
@@ -1071,8 +1159,3 @@ object ScaledFaceCache {
 
 
 
-<<<<<<< Updated upstream
-
-
-=======
->>>>>>> Stashed changes

@@ -15,7 +15,9 @@ import kotlinx.coroutines.withContext
 /** Loads the source face image for the live preview (off the main thread). */
 @Composable
 fun rememberFaceImageBitmap(path: String?, maxDimension: Int = 2048): ImageBitmap? {
-    val state by produceState<ImageBitmap?>(initialValue = null, path, maxDimension) {
+    // Round 26: include the file stamp so an overwritten import (same path) refreshes immediately.
+    val stamp = com.cardpersonality.honor.FaceImageLoader.fileStamp(path)
+    val state by produceState<ImageBitmap?>(initialValue = null, path, maxDimension, stamp) {
         value = if (path.isNullOrEmpty()) {
             null
         } else {
@@ -54,12 +56,37 @@ fun rememberStickerBitmaps(stickers: List<StickerSpec>): Map<String, ImageBitmap
 /** Minimal decoder used by the UI; the renderer has its own cache for provider-side use. */
 internal object FaceImageDecoder {
     fun decode(path: String, maxDimension: Int): Bitmap? {
-        return com.cardpersonality.honor.FaceImageLoader.load(path, maxDimension)
+        com.cardpersonality.honor.FaceImageLoader.load(path, maxDimension)?.let { return it }
+        // Round 26: fallback decode when the cached/Lanczos path fails (large or unusual images),
+        // so the preview never silently stays empty.
+        return try {
+            val opts = android.graphics.BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            android.graphics.BitmapFactory.decodeFile(path, opts)
+            var sample = 1
+            if (opts.outWidth > 0 && opts.outHeight > 0) {
+                val longSide = maxOf(opts.outWidth, opts.outHeight)
+                while (longSide / (sample * 2) >= maxDimension) sample *= 2
+            }
+            val decoded = android.graphics.BitmapFactory.decodeFile(
+                path,
+                android.graphics.BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                },
+            )
+            android.util.Log.e(
+                "CARD_PERSONALITY_PERF",
+                "preview decode fallback path=$path max=$maxDimension ok=${decoded != null}",
+            )
+            decoded
+        } catch (t: Throwable) {
+            android.util.Log.e("CARD_PERSONALITY_PERF", "preview decode failed path=$path", t)
+            null
+        }
     }
 }
-<<<<<<< Updated upstream
-=======
 
 
 
->>>>>>> Stashed changes
