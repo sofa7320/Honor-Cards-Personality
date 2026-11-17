@@ -191,12 +191,6 @@ object FaceHookEngine {
                 ProviderClient.prefetchAsync() // background IPC only (ANR fix v14)
                 // Cold-start: when config finally arrives, finish any pending face applications.
                 ProviderClient.addConfigListener {
-            // Round-23: after a reset / native custom-face change the cached original snapshot must
-            // be refreshed so the panel preview shows the wallet's current face.
-            try {
-                FaceCapture.invalidateAll()
-            } catch (_: Throwable) {
-            }
                     try {
                         retryPendingFaces()
                     } catch (_: Throwable) {
