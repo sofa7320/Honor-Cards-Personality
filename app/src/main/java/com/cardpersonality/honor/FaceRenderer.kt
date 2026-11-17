@@ -385,7 +385,7 @@ object FaceTypefaces {
 /** Small decode cache so repeated provider/thumbnail renders don't re-decode the same file. */
 object FaceImageLoader {
     /** Byte-budgeted decode cache (round 26: prevents huge candidate bitmaps piling up). */
-    private val cache = object : LruCache<String, Bitmap>(64 * 1024 * 1024) {
+    private val cache = object : LruCache<String, Bitmap>(32 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
@@ -617,6 +617,9 @@ object FaceRenderer {
             false
         } finally {
             bitmap.recycle()
+            // Round 29: release the scaled background cache after a save so a 10x export does not
+            // keep three full-size bitmaps (decoded + scaled + output) resident.
+            ScaledFaceCache.clear()
         }
     }
 
@@ -1139,6 +1142,10 @@ object ScaledFaceCache {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
+    fun clear() {
+        runCatching { cache.evictAll() }
+    }
+
     fun get(path: String?, src: Bitmap, dstWidth: Int, dstHeight: Int): Bitmap {
         val key = (path ?: "") + "@" + FaceImageLoader.fileStamp(path) +
             "@" + dstWidth + "x" + dstHeight
@@ -1154,6 +1161,7 @@ object ScaledFaceCache {
         return scaled
     }
 }
+
 
 
 
