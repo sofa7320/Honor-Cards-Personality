@@ -241,6 +241,14 @@ fun EditorScreen(
     var originalFacePath by remember(target.key) { mutableStateOf<String?>(null) }
     var faceUrlFallbackFailed by remember(target.key) { mutableStateOf(false) }
     var snapEnabled by remember { mutableStateOf(EditorPrefs.isSnapEnabled(ctx)) }
+    // Round 25: export quality (1x..10x) persisted globally and applied to all renders/exports.
+    var exportScale by remember {
+        mutableStateOf(EditorPrefs.getExportScale(ctx).takeIf { it in 1..10 } ?: 4)
+    }
+    LaunchedEffect(exportScale) {
+        com.cardpersonality.honor.FaceRenderer.setExportScale(exportScale)
+        EditorPrefs.setExportScale(ctx, exportScale)
+    }
     var showFontPicker by remember { mutableStateOf(false) }
     var fontImporting by remember { mutableStateOf(false) }
     var exportZipRunning by remember { mutableStateOf(false) }
@@ -700,12 +708,6 @@ fun EditorScreen(
                     }
                 }
                 val faceSpec = FaceGeometry.specFor(target.walletPackage)
-                val previewWidth = previewImage?.width ?: 0
-                val exportScale = if (previewWidth <= 0) {
-                    6
-                } else {
-                    (previewWidth.toFloat() / faceSpec.designWidth).roundToInt().coerceIn(2, 6)
-                }
                 Text(
                     text = "圆角 ${faceSpec.cornerRadiusDp.toInt()}dp · 比例 " +
                         "${faceSpec.designWidth.toInt()} : ${faceSpec.designHeight.toInt()} · 导出 " +
@@ -727,7 +729,7 @@ fun EditorScreen(
                     .padding(bottom = innerPadding.calculateBottomPadding() + 28.dp),
             ) {
                 TabRow(
-                    tabs = listOf("图片", "元素", "组件"),
+                    tabs = listOf("图片", "元素", "组件", "输出"),
                     selectedTabIndex = tab,
                     onTabSelected = { tab = it },
                     modifier = Modifier
@@ -759,7 +761,6 @@ fun EditorScreen(
                             importZipRunning = importZipRunning,
                             onPickImage = ::pickSource,
                             onUseCurrentFace = { useCurrentFaceAsSource() },
-                            onRestoreOriginal = { showRestoreDialog = true },
                             onExportZip = { exportCurrentCardZip() },
                             onImportZip = { pickCardZip() },
                             onUseSample = {
@@ -803,6 +804,13 @@ fun EditorScreen(
                             colorPickerRequest = ColorPickerRequest(spec.id, target)
                         },
                         onRequestRename = { renameStickerId = it },
+                    )
+                    3 -> OutputTab(
+                        hasStoredCustomFace = hasStoredCustomFace,
+                        exportScale = exportScale,
+                        faceSpec = FaceGeometry.specFor(target.walletPackage),
+                        onExportScaleChange = { exportScale = it },
+                        onRestoreOriginal = { showRestoreDialog = true },
                     )
                     else -> AppElementsTab(
                         ctx = ctx,
@@ -993,7 +1001,6 @@ private fun ImageTab(
     importZipRunning: Boolean,
     onPickImage: () -> Unit,
     onUseCurrentFace: () -> Unit,
-    onRestoreOriginal: () -> Unit,
     onUseSample: () -> Unit,
     onExportZip: () -> Unit,
     onImportZip: () -> Unit,
@@ -1201,6 +1208,43 @@ private fun ImageTab(
         modifier = Modifier.padding(horizontal = 22.dp, vertical = 4.dp),
     )
 
+
+}
+
+@Composable
+private fun OutputTab(
+    hasStoredCustomFace: Boolean,
+    exportScale: Int,
+    faceSpec: FaceGeometry.FaceSpec,
+    onExportScaleChange: (Int) -> Unit,
+    onRestoreOriginal: () -> Unit,
+) {
+    val outW = faceSpec.designWidth.toInt() * exportScale
+    val outH = faceSpec.designHeight.toInt() * exportScale
+    Text(
+        text = "输出画质决定保存到钱包的卡面分辨率；越高越清晰，文件也越大。",
+        style = MiuixTheme.textStyles.footnote1,
+        color = MiuixTheme.colorScheme.onBackgroundVariant,
+        modifier = Modifier.padding(horizontal = 22.dp, vertical = 6.dp),
+    )
+    SettingsGroup {
+        LabeledSlider(
+            title = "导出画质",
+            valueText = "${exportScale}x · ${outW} × ${outH}",
+            value = exportScale.toFloat(),
+            defaultValue = 4f,
+            valueRange = 1f..10f,
+            keyPoints = listOf(1f, 2f, 3f, 4f, 5f, 6f, 8f, 10f),
+            unit = "x",
+            onValueChange = { onExportScaleChange(it.roundToInt()) },
+        )
+    }
+    Text(
+        text = "当前倍率 ${exportScale}x，预计输出 ${outW} × ${outH} px。仅影响渲染/导出，不改动钱包原始卡面。",
+        style = MiuixTheme.textStyles.footnote1,
+        color = MiuixTheme.colorScheme.onBackgroundVariant,
+        modifier = Modifier.padding(horizontal = 22.dp, vertical = 6.dp),
+    )
     if (hasStoredCustomFace) {
         SettingsGroup {
             ArrowPreference(
@@ -1214,12 +1258,10 @@ private fun ImageTab(
                     )
                 },
                 onClick = onRestoreOriginal,
-                enabled = !imageImporting,
             )
         }
     }
 }
-
 @Composable
 private fun ElementsTab(
     cfg: CardFaceConfig,
@@ -2441,6 +2483,10 @@ private fun List<StickerSpec>.move(from: Int, to: Int): List<StickerSpec> {
     list.add(to, item)
     return list
 }
+
+
+
+
 
 
 

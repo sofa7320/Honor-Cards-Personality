@@ -401,13 +401,20 @@ object OppoFaceHookEngine {
         card ?: return null
         return try {
             val type = cardTypeOf(card, className) ?: return null
-            val aid = firstGetter(card, "getAid")
-            val appCode = firstGetter(card, "getAppCode")
-            val bizId = firstGetter(card, "getBizId")
-            val cardNo = firstGetter(card, "getCardNo")
-            val cardId = firstGetter(card, "getCardId") ?: firstGetter(card, "getId")
-            val id = aid ?: appCode ?: bizId ?: cardNo ?: cardId ?: return null
-            if (id.isEmpty()) return null
+            // Round-25: some OPPO models expose -1/0 placeholders *before* a real card number/AID
+            // getter; walk the documented chain and take the first meaningful value.
+            val chain = listOf(
+                "getCardNo", "getAid", "getAppCode", "getBizId",
+                "getCardId", "getRecordId", "getId",
+            )
+            var id: String? = null
+            for (getter in chain) {
+                val value = firstGetter(card, getter)?.trim()
+                if (value.isNullOrEmpty() || value == "-1" || value == "0" || value == "-1.0") continue
+                id = value
+                break
+            }
+            if (id == null) return null
             CardIdentity(
                 type = type,
                 id = id,
@@ -547,8 +554,12 @@ object OppoFaceHookEngine {
                 if (isFace) widgetHits.incrementAndGet()
                 recordCard(identity, sanitizedFaceUrl(url), urlMeta[url]?.name ?: "", urlMeta[url]?.balance ?: "")
             } else if (isFace) {
-                if (OppoBridge.resolveFace(identity) == null && hostView is ImageView) {
-                    scheduleCapture(hostView, identity, "widget")
+                if (OppoBridge.resolveFace(identity) == null) {
+                    val captureView = (hostView as? ImageView) ?: innerFaceView(host)
+                    if (captureView != null) {
+                        scheduleCapture(captureView, identity, "widget")
+                        scheduleViewFaceCapture(captureView, identity, "widget")
+                    }
                 }
             }
         }
@@ -655,6 +666,110 @@ object OppoFaceHookEngine {
         } catch (t: Throwable) {
             OppoBridge.oplog("oppo", "local-file-fail", t.javaClass.simpleName)
             bumpSource("none")
+        }
+    }
+
+    private val viewCapturedHash = ConcurrentHashMap<String, Int>()
+    private val viewCaptureAttempts = AtomicLong(0L)
+
+    /**
+     * Round-25: OPPO captureCount=0 root cause — the OPPO path never captured the wallet's current
+     * face from the bound ImageView (Honor's FaceCapture was not wired here). Capture after the
+     * hook hit, retrying until the drawable actually changes (native custom face / 3rd-party
+     * opluscustomizer), then persist locally + report ORIGINAL so the editor preview works.
+     */
+    private fun scheduleViewFaceCapture(view: ImageView?, identity: CardIdentity, source: String) {
+        view ?: return
+        try {
+            if (!OppoBridge.originalNeeded(identity.type, identity.id) &&
+                viewCapturedHash.containsKey(identity.fileKey)
+            ) {
+                return
+            }
+            viewCaptureAttempts.incrementAndGet()
+            val listener = object : android.view.ViewTreeObserver.OnPreDrawListener {
+                private var frames = 0
+                override fun onPreDraw(): Boolean {
+                    frames++
+                    if (frames > 40 || !view.isAttachedToWindow) {
+                        remove()
+                        return true
+                    }
+                    val drawable = view.drawable ?: return true
+                    val hash = System.identityHashCode(drawable)
+                    if (hash == viewCapturedHash[identity.fileKey]) return true
+                    view.post {
+                        try {
+                            val drawableNow = view.drawable ?: return@post
+                            val bitmapNow = drawableToBitmapSafe(drawableNow) ?: return@post
+                            remove()
+                            persistViewCapture(identity, bitmapNow, source)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                    return true
+                }
+
+                private fun remove() {
+                    try {
+                        if (view.viewTreeObserver.isAlive) {
+                            view.viewTreeObserver.removeOnPreDrawListener(this)
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
+            view.viewTreeObserver.addOnPreDrawListener(listener)
+            if (viewCaptureAttempts.get() <= MAX_URL_LOGS) {
+                OppoBridge.oplog("oppo", "capture-view-scheduled", "${identity.id} src=$source")
+            }
+        } catch (t: Throwable) {
+            OppoBridge.oplog("oppo", "capture-view-fail", t.javaClass.simpleName)
+        }
+    }
+
+    private fun persistViewCapture(identity: CardIdentity, bitmap: android.graphics.Bitmap, source: String) {
+        try {
+            val bytes = encodeJpeg(bitmap, 95) ?: encodeJpeg(bitmap, 85)
+            val hash = System.identityHashCode(bitmap)
+            viewCapturedHash[identity.fileKey] = hash
+            if (bytes == null || bytes.isEmpty()) {
+                bitmap.recycle()
+                return
+            }
+            if (OppoBridge.saveOriginal(identity.type, identity.id, bytes)) {
+                captureCount.incrementAndGet()
+                bumpSource("bitmap")
+                OppoBridge.sendOriginal(identity.type, identity.id, bytes)
+                if (captureCount.get() <= MAX_URL_LOGS) {
+                    OppoBridge.oplog(
+                        "oppo",
+                        "capture-view-ok",
+                        "${identity.id} src=$source bytes=${bytes.size}",
+                    )
+                }
+            }
+            bitmap.recycle()
+        } catch (_: Throwable) {
+            try {
+                bitmap.recycle()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun drawableToBitmapSafe(drawable: android.graphics.drawable.Drawable): android.graphics.Bitmap? {
+        return try {
+            val w = drawable.intrinsicWidth
+            val h = drawable.intrinsicHeight
+            if (w <= 0 || h <= 0) return null
+            val bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bitmap)
+            drawable.setBounds(0, 0, canvas.width, canvas.height)
+            drawable.draw(canvas)
+            bitmap
+        } catch (_: Throwable) {
+            null
         }
     }
 
@@ -988,14 +1103,20 @@ object OppoFaceHookEngine {
         }
     }
 
-    /** Round-22: filter the wallet's "添加卡/添加交通卡/..." placeholder entries. */
+    /**
+     * Round-25: filter only real placeholders. Bank/credit-card rows may legitimately report
+     * identity=-1 until a card-number/AID is derived (see identityOf), so a bare -1/0 is NOT enough
+     * to drop a card anymore — otherwise bank cards disappeared on some OPPO models.
+     */
     private fun isPlaceholderCard(identity: CardIdentity, faceUrl: String?, name: String): Boolean {
-        val id = identity.id.trim()
-        if (id.isEmpty() || id == "-1" || id == "0") return true
         val label = name.ifBlank { identity.name }.trim()
         if (label.contains("添加")) return true
-        if (faceUrl.isNullOrBlank() && label.length <= 2) return true
-        return false
+        val id = identity.id.trim()
+        val idPlaceholder = id.isEmpty() || id == "-1" || id == "0"
+        if (!idPlaceholder) return false
+        // remaining -1/0/empty ids: transit "add card" tiles and identity-less empty rows only
+        if (identity.type == "transit") return true
+        return faceUrl.isNullOrBlank() && label.length <= 2
     }
 
     fun engineStateJson(): String {
@@ -1013,6 +1134,7 @@ object OppoFaceHookEngine {
                 .put("replaceCount", replaceCount.get())
                 .put("pairCount", pairCount.get())
                 .put("captureCount", captureCount.get())
+                .put("viewCaptureCount", viewCaptureAttempts.get())
                 .put("widgetHits", widgetHits.get())
                 .put("fileReplacements", fileReplacements.get())
                 .put("recordedModels", recordedModels.get())

@@ -96,7 +96,6 @@ fun HomeScreen(
     var loading by remember { mutableStateOf(true) }
     var moduleConnected by remember { mutableStateOf<Boolean?>(null) }
     var storeVersion by remember { mutableIntStateOf(0) }
-    var bridgeReportVersion by remember { mutableStateOf(0L) }
     var detectedWallets by remember { mutableStateOf<List<WalletPackages.InstalledWallet>>(emptyList()) }
     var walletSnapshot by remember { mutableStateOf<WalletsSnapshot?>(null) }
     var oppoEngineStatus by remember { mutableStateOf<OppoEngineStatus?>(null) }
@@ -152,9 +151,6 @@ fun HomeScreen(
                 }
                 reportUpdatedAt = FaceRepository.reportUpdatedAt(ctx)
                 storeVersion = FaceRepository.storeVersion(ctx)
-                bridgeReportVersion = runCatching {
-                    com.cardpersonality.honor.data.bridge.PanelBridgeServer.reportVersion()
-                }.getOrDefault(bridgeReportVersion)
                 detectedWallets = WalletPackages.installed(ctx)
                 walletSnapshot = WalletProbe.query(ctx)
                 oppoEngineStatus = OppoEngineProbe.query(ctx)
@@ -210,28 +206,9 @@ fun HomeScreen(
     }
     // Watch the stored config version so a face change made elsewhere (editor save, hook write)
     // refreshes the list + thumbnails automatically instead of waiting for an app restart.
-    // Round 19: also watch the bridge reportVersion so OPPO cards pushed from the wallet appear
-    // without a manual refresh.
-    LaunchedEffect(Unit) {
-        while (true) {
-            kotlinx.coroutines.delay(1500)
-            val version = withContext(Dispatchers.IO) {
-                runCatching { FaceRepository.storeVersion(ctx) }.getOrDefault(storeVersion)
-            }
-            val bridgeVersion = withContext(Dispatchers.IO) {
-                runCatching {
-                    com.cardpersonality.honor.data.bridge.PanelBridgeServer.reportVersion()
-                }.getOrDefault(bridgeReportVersion)
-            }
-            if (version != storeVersion) {
-                storeVersion = version
-                reloadKey++
-            } else if (bridgeVersion != bridgeReportVersion) {
-                bridgeReportVersion = bridgeVersion
-                reloadKey++
-            }
-        }
-    }
+    // Round 25: the 1.5 s storeVersion/reportVersion polling watcher was removed. The list is
+    // refreshed on first frame (initial LaunchedEffect(reloadKey)) and on ON_RESUME (returning
+    // from the editor/wallet); the top-right refresh button remains for manual refresh.
 
     Scaffold(
         topBar = {
@@ -846,6 +823,9 @@ private fun CardFaceRowThumbnail(
     cfg: CardFaceConfig,
     refreshToken: Int,
 ) {
+    // Round 25: decode at the display size (≤640 px) instead of the full-resolution export.
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val thumbTargetPx = with(density) { 120.dp.toPx().toInt() }.coerceIn(96, 640)
     val bitmap by produceState<ImageBitmap?>(
         initialValue = null,
         card.key.fileKey,
@@ -854,6 +834,7 @@ private fun CardFaceRowThumbnail(
         card.lastSeen,
         card.faceUrl,
         refreshToken,
+        thumbTargetPx,
     ) {
         value = withContext(Dispatchers.IO) {
             val wallet = card.walletPackage.takeIf { it.isNotBlank() }
@@ -866,7 +847,7 @@ private fun CardFaceRowThumbnail(
                 // Cache key must follow the card key + config version: evict the old decode so a
                 // freshly regenerated export/original snapshot is re-read (no app restart).
                 FaceImageLoader.evict(file.absolutePath)
-                FaceImageLoader.load(file.absolutePath, 640)?.asImageBitmap()
+                FaceImageLoader.load(file.absolutePath, thumbTargetPx)?.asImageBitmap()
             }
         }
     }
@@ -922,7 +903,7 @@ private fun TypeDefaultThumbnail(
                 FaceRepository.exportFileFor(ctx, type, CardKey.TYPE_DEFAULT_ID)
                     ?.let { file ->
                         FaceImageLoader.evict(file.absolutePath)
-                        FaceImageLoader.load(file.absolutePath, 400)?.asImageBitmap()
+                        FaceImageLoader.load(file.absolutePath, 320)?.asImageBitmap()
                     }
             }
         }
@@ -1078,6 +1059,10 @@ private fun formatTime(millis: Long): String {
         ""
     }
 }
+
+
+
+
 
 
 

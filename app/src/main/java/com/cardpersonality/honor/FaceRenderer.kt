@@ -400,6 +400,12 @@ object FaceImageLoader {
         val prefix = path + "@"
         val keys = runCatching { cache.snapshot().keys.toList() }.getOrDefault(emptyList())
         keys.filter { it.startsWith(prefix) }.forEach { cache.remove(it) }
+        // Round 25: drop compressed thumbnail sidecars as well so an updated export is re-read.
+        runCatching {
+            File(path).parentFile?.listFiles()?.forEach { f ->
+                if (f.name.startsWith(File(path).name + ".thumb")) f.delete()
+            }
+        }
     }
 
     fun load(path: String?, maxDimension: Int = 2560): Bitmap? {
@@ -408,10 +414,29 @@ object FaceImageLoader {
         if (!file.isFile) return null
         val cacheKey = path + "@" + maxDimension
         cache.get(cacheKey)?.let { return it }
+        // Round 25: list thumbnails keep a compressed WebP (q80) cache next to the source so
+        // repeated Home refreshes do not re-run Lanczos on the full-resolution export.
+        val isThumb = maxDimension in 1..640
+        val thumbFile = if (isThumb) File(file.parentFile, file.name + ".thumb$maxDimension.webp") else null
         val bitmap = try {
-            decodeSampled(file, maxDimension) ?: return null
+            if (thumbFile != null && thumbFile.isFile &&
+                thumbFile.lastModified() >= file.lastModified() &&
+                thumbFile.length() > 0L
+            ) {
+                BitmapFactory.decodeFile(thumbFile.absolutePath)
+            } else {
+                decodeSampled(file, maxDimension)
+            } ?: return null
         } catch (_: Throwable) {
             return null
+        }
+        if (isThumb && thumbFile != null && !thumbFile.isFile) {
+            runCatching {
+                FileOutputStream(thumbFile).use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.WEBP, 80, out)
+                    out.flush()
+                }
+            }
         }
         cache.put(cacheKey, bitmap)
         return bitmap
@@ -428,7 +453,17 @@ object FaceImageLoader {
             inSampleSize = sample
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }
-        return BitmapFactory.decodeFile(file.absolutePath, opts)
+        val decoded = BitmapFactory.decodeFile(file.absolutePath, opts) ?: return null
+        if (maxDimension > 0) {
+            val longSide = max(decoded.width, decoded.height)
+            if (longSide > maxDimension) {
+                val ratio = maxDimension.toFloat() / longSide
+                val dw = (decoded.width * ratio).roundToInt().coerceAtLeast(1)
+                val dh = (decoded.height * ratio).roundToInt().coerceAtLeast(1)
+                return Lanczos3.scale(decoded, dw, dh)
+            }
+        }
+        return decoded
     }
 }
 
@@ -440,6 +475,17 @@ object FaceRenderer {
     const val EXPORT_WIDTH = 2016
     const val EXPORT_HEIGHT = 1248
     const val JPEG_QUALITY = 92
+
+    /** Round 25: user-selected export multiplier (1x..10x); null = adaptive (2x..6x). */
+    @Volatile
+    private var exportScaleOverride: Int? = null
+
+    /** Sets the persistent export quality override (1..10) for subsequent renders/exports. */
+    fun setExportScale(scale: Int?) {
+        exportScaleOverride = scale?.coerceIn(1, 10)
+    }
+
+    fun currentExportScale(): Int = exportScaleOverride ?: 0
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
@@ -457,6 +503,12 @@ object FaceRenderer {
         walletPackage: String? = null,
     ): android.util.Size? {
         val spec = FaceGeometry.specFor(walletPackage)
+        exportScaleOverride?.let { scale ->
+            return android.util.Size(
+                spec.designWidth.toInt() * scale,
+                spec.designHeight.toInt() * scale,
+            )
+        }
         val image = FaceImageLoader.load(FaceImageLoader.resolvePath(ctx, cfg.imagePath))
         val baseWidth = image?.width ?: 0
         val scale = if (baseWidth <= 0) {
@@ -550,7 +602,6 @@ object FaceRenderer {
             val p = FaceGeometry.placement(
                 image.width.toFloat(), image.height.toFloat(), width, height, cfg,
             )
-            val src = Rect(0, 0, image.width, image.height)
             val dst = Rect(
                 p.dx.toInt(),
                 p.dy.toInt(),
@@ -558,6 +609,14 @@ object FaceRenderer {
                 (p.dy + p.destHeight).toInt(),
             )
             if (dst.width() > 0 && dst.height() > 0) {
+                // Round 25: high-quality downscale with Lanczos3 (linear light) instead of the
+                // canvas' bilinear filtering; draw 1:1 afterwards.
+                val base = if (image.width > dst.width() + 1 || image.height > dst.height() + 1) {
+                    Lanczos3.scale(image, dst.width(), dst.height())
+                } else {
+                    image
+                }
+                val src = Rect(0, 0, base.width, base.height)
                 if (cfg.flipX || cfg.flipY) {
                     val centerX = p.dx + p.destWidth / 2f
                     val centerY = p.dy + p.destHeight / 2f
@@ -568,10 +627,10 @@ object FaceRenderer {
                         centerX,
                         centerY,
                     )
-                    canvas.drawBitmap(image, src, dst, bitmapPaint)
+                    canvas.drawBitmap(base, src, dst, bitmapPaint)
                     canvas.restore()
                 } else {
-                    canvas.drawBitmap(image, src, dst, bitmapPaint)
+                    canvas.drawBitmap(base, src, dst, bitmapPaint)
                 }
             }
         }
@@ -727,8 +786,165 @@ internal fun Float.safe(): Float = if (isNaN() || isInfinite()) 0f else this
 internal fun Int.clamp255(): Int = min(max(this, 0), 255)
 
 
+/**
+ * Round 25: Lanczos3 resampler (a = 3, two-pass separable convolution).
+ * Default working space is linear light (sRGB decode -> convolve -> sRGB encode), which avoids the
+ * darkening/soft ring artifacts of naive sRGB resampling. Runs on the calling (background) thread.
+ */
+object Lanczos3 {
 
+    private const val A = 3f
+    private const val SRGB_GAMMA = 2.2f
 
+    fun scale(src: Bitmap, dstWidth: Int, dstHeight: Int, linearLight: Boolean = true): Bitmap {
+        if (dstWidth <= 0 || dstHeight <= 0) return src
+        if (src.width == dstWidth && src.height == dstHeight) return src
+        val sw = src.width
+        val sh = src.height
+        if (sw <= 0 || sh <= 0) return src
+        val pixels = IntArray(sw * sh)
+        src.getPixels(pixels, 0, sw, 0, 0, sw, sh)
+        val srcChannels = FloatArray(sw * sh * 4)
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            val a = ((p ushr 24) and 0xFF) / 255f
+            val r = ((p ushr 16) and 0xFF) / 255f
+            val g = ((p ushr 8) and 0xFF) / 255f
+            val b = (p and 0xFF) / 255f
+            val base = i * 4
+            if (linearLight) {
+                srcChannels[base] = srgbToLinear(r)
+                srcChannels[base + 1] = srgbToLinear(g)
+                srcChannels[base + 2] = srgbToLinear(b)
+            } else {
+                srcChannels[base] = r
+                srcChannels[base + 1] = g
+                srcChannels[base + 2] = b
+            }
+            srcChannels[base + 3] = a
+        }
+
+        // Horizontal pass: source (sw x sh) -> temp (dstWidth x sh)
+        val temp = FloatArray(dstWidth * sh * 4)
+        val xScale = sw.toFloat() / dstWidth
+        val xSupport = A * maxOf(1f, xScale)
+        for (dx in 0 until dstWidth) {
+            val center = (dx + 0.5f) * xScale - 0.5f
+            val start = kotlin.math.floor(center - xSupport).toInt()
+            val end = kotlin.math.ceil(center + xSupport).toInt()
+            val weights = FloatArray(end - start + 1)
+            var sum = 0f
+            for (sx in start..end) {
+                val w = kernel((sx - center) / xSupport)
+                weights[sx - start] = w
+                sum += w
+            }
+            if (sum != 0f) for (i in weights.indices) weights[i] /= sum
+            for (y in 0 until sh) {
+                var r = 0f
+                var g = 0f
+                var b = 0f
+                var a = 0f
+                for (sx in start..end) {
+                    val clamped = sx.coerceIn(0, sw - 1)
+                    val w = weights[sx - start]
+                    val si = (y * sw + clamped) * 4
+                    r += srcChannels[si] * w
+                    g += srcChannels[si + 1] * w
+                    b += srcChannels[si + 2] * w
+                    a += srcChannels[si + 3] * w
+                }
+                val ti = (y * dstWidth + dx) * 4
+                temp[ti] = r
+                temp[ti + 1] = g
+                temp[ti + 2] = b
+                temp[ti + 3] = a
+            }
+        }
+
+        // Vertical pass: temp (dstWidth x sh) -> out (dstWidth x dstHeight)
+        val outChannels = FloatArray(dstWidth * dstHeight * 4)
+        val yScale = sh.toFloat() / dstHeight
+        val ySupport = A * maxOf(1f, yScale)
+        for (dy in 0 until dstHeight) {
+            val center = (dy + 0.5f) * yScale - 0.5f
+            val start = kotlin.math.floor(center - ySupport).toInt()
+            val end = kotlin.math.ceil(center + ySupport).toInt()
+            val weights = FloatArray(end - start + 1)
+            var sum = 0f
+            for (sy in start..end) {
+                val w = kernel((sy - center) / ySupport)
+                weights[sy - start] = w
+                sum += w
+            }
+            if (sum != 0f) for (i in weights.indices) weights[i] /= sum
+            for (x in 0 until dstWidth) {
+                var r = 0f
+                var g = 0f
+                var b = 0f
+                var a = 0f
+                for (sy in start..end) {
+                    val clamped = sy.coerceIn(0, sh - 1)
+                    val w = weights[sy - start]
+                    val ti = (clamped * dstWidth + x) * 4
+                    r += temp[ti] * w
+                    g += temp[ti + 1] * w
+                    b += temp[ti + 2] * w
+                    a += temp[ti + 3] * w
+                }
+                val oi = (dy * dstWidth + x) * 4
+                outChannels[oi] = r
+                outChannels[oi + 1] = g
+                outChannels[oi + 2] = b
+                outChannels[oi + 3] = a
+            }
+        }
+
+        val outPixels = IntArray(dstWidth * dstHeight)
+        for (i in outPixels.indices) {
+            val base = i * 4
+            val r = outChannels[base].coerceIn(0f, 1f)
+            val g = outChannels[base + 1].coerceIn(0f, 1f)
+            val b = outChannels[base + 2].coerceIn(0f, 1f)
+            val a = outChannels[base + 3].coerceIn(0f, 1f)
+            val ri = if (linearLight) linearToSrgb(r) else r
+            val gi = if (linearLight) linearToSrgb(g) else g
+            val bi = if (linearLight) linearToSrgb(b) else b
+            outPixels[i] = ((a * 255f + 0.5f).toInt() shl 24) or
+                ((ri * 255f + 0.5f).toInt() shl 16) or
+                ((gi * 255f + 0.5f).toInt() shl 8) or
+                (bi * 255f + 0.5f).toInt()
+        }
+        val out = Bitmap.createBitmap(dstWidth, dstHeight, Bitmap.Config.ARGB_8888)
+        out.setPixels(outPixels, 0, dstWidth, 0, 0, dstWidth, dstHeight)
+        return out
+    }
+
+    private fun kernel(t: Float): Float {
+        val x = kotlin.math.abs(t)
+        if (x >= A) return 0f
+        return if (x < 1e-6f) {
+            1f
+        } else {
+            val pix = Math.PI.toFloat() * x
+            (kotlin.math.sin(pix) / pix) * (kotlin.math.sin(pix / A) / (pix / A))
+        }
+    }
+
+    private fun srgbToLinear(c: Float): Float =
+        if (c <= 0.04045f) {
+            c / 12.92f
+        } else {
+            Math.pow(((c + 0.055f) / 1.055f).toDouble(), SRGB_GAMMA.toDouble()).toFloat()
+        }
+
+    private fun linearToSrgb(c: Float): Float =
+        if (c <= 0.0031308f) {
+            c * 12.92f
+        } else {
+            (1.055f * Math.pow(c.toDouble(), 1.0 / SRGB_GAMMA) - 0.055f).toFloat()
+        }
+}
 
 
 

@@ -165,13 +165,15 @@ jobs:
           m = re.search(r'^## \[%s\][^\n]*\n(.*?)(?=^## \[|\Z)' % re.escape(version),
                         changelog, re.S | re.M)
           section = m.group(1).strip() if m else '_（CHANGELOG 中未找到该版本条目）_'
+          # Strip release-process blockquotes (e.g. pre-release / PR workflow notes) from the public body.
+          section = chr(10).join(line for line in section.split(chr(10)) if not line.lstrip().startswith('>')).strip()
           body = (
               f"## 本次更新 · v{version}\n\n"
               f"{section}\n\n"
               "---\n\n"
               "## 安装 / 升级\n\n"
               "- 需要 **root + LSPosed（Zygisk）**，作用域勾选 **荣耀钱包**（`com.hihonor.wallet`）。\n"
-              "- 安装后：LSPosed 启用模块 → **先打开一次「荣耀卡面工坊」面板**（初始化跨进程通道）→ 重启荣耀钱包。\n"
+              "- 安装后：LSPosed 启用模块 → 先打开一次「药做卡面」面板（初始化跨进程通道）→ 重启对应钱包。\n"
               "- 本 Release 的 APK 为 **release 签名构建**；从旧版（debug 签名）升级前请先卸载旧版，之后同签名可直接覆盖升级。\n"
               "- 版本号：`versionName` 见标题；`versionCode` 固定为 1。\n\n"
               "## 资产\n\n"
