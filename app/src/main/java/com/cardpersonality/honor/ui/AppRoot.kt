@@ -56,10 +56,14 @@ fun CardPersonalityApp() {
         )
         val fadeSpec = tween<Float>(durationMillis = 300, easing = FastOutSlowInEasing)
 
+        // Round 29: targetState is a stable string key (not a data object) so Home snapshot/reload
+        // updates can never retrigger the transition (fixes the perceived double slide on back).
         AnimatedContent(
-            targetState = screen,
+            targetState = screen.key,
             transitionSpec = {
-                val forward = targetState.depth >= initialState.depth
+                val fromDepth = if (initialState == "__home__") 0 else 1
+                val toDepth = if (targetState == "__home__") 0 else 1
+                val forward = toDepth >= fromDepth
                 if (forward) {
                     (slideInHorizontally(slideSpec) { it } + fadeIn(fadeSpec)) togetherWith
                         (slideOutHorizontally(slideSpec) { -it / 4 } + fadeOut(fadeSpec))
@@ -69,19 +73,19 @@ fun CardPersonalityApp() {
                 }
             },
             label = "screen-slide",
-        ) { current ->
+        ) { currentKey ->
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(MiuixTheme.colorScheme.background),
             ) {
                 when {
-                    current.key.startsWith("editor:") && target != null -> EditorScreen(
+                    currentKey.startsWith("editor:") && target != null -> EditorScreen(
                         ctx = ctx,
                         target = target,
                         onDone = { editorTarget = null },
                     )
-                    current.key == "__about__" -> AboutScreen(
+                    currentKey == "__about__" -> AboutScreen(
                         ctx = ctx,
                         onBack = { showAbout = false },
                     )
@@ -98,5 +102,7 @@ fun CardPersonalityApp() {
         }
     }
 }
+
+
 
 
