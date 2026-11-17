@@ -55,6 +55,9 @@ object PanelBridgeServer {
         Thread(r, "cardpersonality-bridge-rx").apply { isDaemon = true }
     }
     private val clients = CopyOnWriteArrayList<Client>()
+    private val pushExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "cardpersonality-face-push").apply { isDaemon = true }
+    }
 
     @Volatile private var appContext: Context? = null
     @Volatile private var listenPort: Int = 0
@@ -278,7 +281,7 @@ object PanelBridgeServer {
         broadcast("CONFIG\t$configJson")
     }
 
-    fun pushFace(ctx: Context, fileKey: String, version: Int, jpeg: ByteArray, faceUrl: String? = null) {
+    fun pushFace(ctx: Context, fileKey: String, version: Int, jpeg: ByteArray, faceUrl: String? = null, walletPackage: String? = null) {
         val snapshot = readSnapshot(ctx)
         val faces = snapshot.optJSONObject("faces") ?: JSONObject().also { snapshot.put("faces", it) }
         faces.put(
@@ -292,10 +295,41 @@ object PanelBridgeServer {
         writeFileAtomically(File(ctx.filesDir, SNAPSHOT_FILE), snapshot.toString())
         val urlSegment = encode((faceUrl ?: "").toByteArray(Charsets.UTF_8))
         broadcast("PUT\t$fileKey\t$version\t${encode(jpeg)}\t$urlSegment")
+        // Round-24: reference-repo proven path — push through the wallet's own loopback face server
+        // (request/response). The old one-way broadcast silently lost PUT frames on device.
+        val url = faceUrl.orEmpty()
+        if (url.isNotBlank()) {
+            pushExecutor.execute {
+                try {
+                    WalletFaceClient.putWithRetry(ctx, url, fileKey, jpeg, walletPackage = walletPackage)
+                    refreshOriginalAfterPush(ctx, fileKey)
+                } catch (_: Throwable) {
+                }
+            }
+        } else {
+            OpLog.record(ctx, "bridge", "push-face-skip", "key=$fileKey (no faceUrl)")
+        }
     }
 
     fun pushFaceDelete(ctx: Context, fileKey: String) {
         broadcast("DEL\t$fileKey")
+    }
+
+    /** Round-24: after a successful remote PUT, re-resolve the card preview/face mapping. */
+    private fun refreshOriginalAfterPush(ctx: Context, fileKey: String) {
+        try {
+            OpLog.record(ctx, "bridge", "push-face-remote-ok", "key=$fileKey")
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Ask the wallet face server to re-list URLs (diagnostics only). */
+    fun probeWalletFaceServer(ctx: Context): List<String>? {
+        return try {
+            WalletFaceClient.urls()
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     fun requestOriginal(ctx: Context, type: String, id: String) {

@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import android.content.Intent
 import com.cardpersonality.honor.data.CardKey
 import com.cardpersonality.honor.data.FaceRepository
 import com.cardpersonality.honor.data.Hashing
@@ -103,6 +104,26 @@ class FaceProvider : ContentProvider() {
                     val identity = extras?.getString("id").orEmpty()
                     val file = com.cardpersonality.honor.data.FaceRepository.originalSnapshotFile(ctx, type, identity)
                     val deleted = file?.delete() ?: false
+                    // Round-25 (door spec H3): the wallet process must drop its per-process capture
+                    // guard too, otherwise a native face change never recaptures.
+                    try {
+                        val recapture = Intent(ACTION_RECAPTURE).apply {
+                            putExtra("type", type)
+                            putExtra("id", identity)
+                        }
+                        val targets = listOf(
+                            com.cardpersonality.honor.data.WalletScope.HONOR
+                        ) + com.cardpersonality.honor.data.WalletScope.OPPO_PACKAGES +
+                            com.cardpersonality.honor.data.WalletScope.XIAOMI_PACKAGES
+                        for (pkg in targets.distinct()) {
+                            try {
+                                ctx.sendBroadcast(Intent(recapture).setPackage(pkg))
+                            } catch (_: Throwable) {
+                            }
+                        }
+                        OpLog.record(ctx, "config", "recapture-broadcast", "$type:$identity")
+                    } catch (_: Throwable) {
+                    }
                     out.putBoolean(EXTRA_OK, true)
                     out.putBoolean("deleted", deleted)
                 }
@@ -524,6 +545,7 @@ class FaceProvider : ContentProvider() {
 
         /** Last wallet-engine diagnostics JSON (OPPO hook state, shown in About/diagnostics). */
         private const val ENGINE_STATE_FILE = "oppo_engine.json"
+        private const val ACTION_RECAPTURE = "com.cardpersonality.honor.RECAPTURE_ORIGINAL"
 
         /** Round-16: per-process heartbeat map (processName -> heartbeat JSON). */
         private const val ENGINE_PROCESSES_FILE = "oppo_engine_processes.json"

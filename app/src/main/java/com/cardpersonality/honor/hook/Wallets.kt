@@ -4,13 +4,15 @@ package com.cardpersonality.honor.hook
  * Round-11 multi-wallet registry.
  *
  * Candidate wallet packages are all listed in AndroidManifest `<queries>` (targetSdk 36 package
- * visibility: without it PackageManager cannot see other apps). Only Honor has a native hook
- * engine; every other candidate is treated as "oppo" (欧加/OPPO/realme family) and uses the OPPO
- * engine (fail-open; classes only exist in the real OPPO wallet, so unknown candidates simply don't
- * match and nothing changes).
+ * visibility: without it PackageManager cannot see other apps). Each wallet family has its own
+ * hook engine:
+ *  - Honor (`kind = "honor"`)            -> FaceHookEngine (provider IPC, legacy storage keys)
+ *  - OPPO/欧加 family (`kind = "oppo"`)  -> OppoFaceHookEngine (loopback bridge, wallet-scoped keys)
+ *  - Xiaomi smart card (`kind = "xiaomi"`)-> XiaomiFaceHookEngine (loopback bridge, wallet-scoped
+ *    keys; every other OPPO candidate keeps using the OPPO engine, fail-open).
  *
  * Storage keys: legacy (Honor) `"<type>:<identity>"` and wallet-scoped
- * `"<package>|<type>:<identity>"` for other wallets.
+ * `"<package>|<type>:<identity>"` for the other wallets.
  */
 data class WalletTarget(
     val pkg: String,
@@ -29,13 +31,23 @@ object Wallets {
     const val ONEPLUS = "com.oneplus.wallet"
     const val NEARME = "com.nearme.wallet"
 
+    /** Xiaomi smart card (小米智能卡) — proof-of-concept port, see work/re/xiaomi/XIAOMI-PORT.md. */
+    const val XIAOMI = "com.miui.tsmclient"
+
     const val KIND_HONOR = "honor"
     const val KIND_OPPO = "oppo"
+    const val KIND_XIAOMI = "xiaomi"
 
     const val KEY_SEPARATOR = "|"
 
     /** Packages whose card faces use the OPPO/欧加 engine (and the 328:202 geometry). */
     val OPPO_PACKAGES: Set<String> = setOf(OPPO, OPPO_COLOROS, OPPO_PLUS, ONEPLUS, NEARME)
+
+    /**
+     * Packages whose faces are rendered with the Xiaomi geometry (320:202 design units == the
+     * reference module's proven 960:606 output) and delivered over the loopback bridge.
+     */
+    val XIAOMI_PACKAGES: Set<String> = setOf(XIAOMI)
 
     val HONOR_TARGET = WalletTarget(HONOR, "荣耀钱包", KIND_HONOR)
     val OPPO_TARGET = WalletTarget(OPPO, "欧加钱包", KIND_OPPO)
@@ -43,6 +55,7 @@ object Wallets {
     val OPLUS_TARGET = WalletTarget(OPPO_PLUS, "OPPO 钱包", KIND_OPPO)
     val ONEPLUS_TARGET = WalletTarget(ONEPLUS, "OnePlus 钱包", KIND_OPPO)
     val NEARME_TARGET = WalletTarget(NEARME, "欧加钱包（旧版）", KIND_OPPO)
+    val XIAOMI_TARGET = WalletTarget(XIAOMI, "小米智能卡", KIND_XIAOMI)
 
     /** All candidate wallets, known even when not installed (show as not-installed in the panel). */
     val ALL: List<WalletTarget> = listOf(
@@ -52,6 +65,7 @@ object Wallets {
         OPLUS_TARGET,
         ONEPLUS_TARGET,
         NEARME_TARGET,
+        XIAOMI_TARGET,
     )
 
     fun target(pkg: String?): WalletTarget? = ALL.firstOrNull { it.pkg == pkg }
@@ -62,9 +76,15 @@ object Wallets {
 
     fun isOppoFamily(pkg: String?): Boolean = pkg != null && pkg in OPPO_PACKAGES
 
+    fun isXiaomi(pkg: String?): Boolean = pkg != null && pkg in XIAOMI_PACKAGES
+
+    /** Wallets whose faces reach the wallet process over the loopback bridge (no ContentProvider). */
+    fun usesLoopbackBridge(pkg: String?): Boolean = isOppoFamily(pkg) || isXiaomi(pkg)
+
     fun kindOf(pkg: String?): String = when {
         isHonor(pkg) -> KIND_HONOR
         isOppoFamily(pkg) -> KIND_OPPO
+        isXiaomi(pkg) -> KIND_XIAOMI
         else -> "unknown"
     }
 

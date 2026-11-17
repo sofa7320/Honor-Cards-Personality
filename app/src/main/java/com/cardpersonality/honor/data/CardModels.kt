@@ -110,6 +110,8 @@ data class CardInfo(
      * e.g. "78.60"); empty when unknown. Display-only, never used for face matching.
      */
     val balance: String = "",
+    /** Round-25: wallet-native face version key (Honor access faceId), null when unknown. */
+    val nativeFaceKey: String? = null,
 ) {
     val type: String get() = key.type
 
@@ -127,6 +129,7 @@ data class CardInfo(
         put("wallet", walletPackage)
         put("walletKind", walletKind)
         if (balance.isNotEmpty()) put("balance", balance)
+        if (!nativeFaceKey.isNullOrBlank()) put("nativeFaceKey", nativeFaceKey)
     }
 
     companion object {
@@ -148,6 +151,7 @@ data class CardInfo(
                 walletPackage = wallet,
                 walletKind = walletKind,
                 balance = o.optString("balance", ""),
+                nativeFaceKey = o.optString("nativeFaceKey", "").ifEmpty { null },
             )
         }
     }

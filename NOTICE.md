@@ -1,20 +1,21 @@
 Copyright 2026 The CardPersonality Project contributors
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-    http://www.apache.org/licenses/LICENSE-2.0
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # 第三方组件与许可声明（Third-Party Notices）
 
-荣耀卡面工坊（Card Personality）在构建与运行时使用/参考了以下第三方组件。
+药做卡面（Card Personality）在构建与运行时使用/参考了以下第三方组件。
 分发本项目的 APK 或源码时，请保留本文件及相应许可证声明。
 
 ## 运行时依赖
@@ -29,14 +30,14 @@ limitations under the License.
 
 | 组件 | 用途 | 许可证 |
 |---|---|---|
-| [legacy Xposed API](https://api.xposed.info/) 桩（`xposed-stub/`，`compileOnly`，不打包进 APK） | 提供 `de.robv.android.xposed.*` 编译期接口 | Apache License 2.0（Xposed API） |
+| [libxposed API](https://github.com/libxposed/api)（`compileOnly`，不打包进 APK） | 现代 Xposed 模块 API 102 | Apache License 2.0 |
 | Android Gradle Plugin / Gradle / Kotlin Compose Compiler | 构建工具链 | Apache License 2.0 / Gradle 为 Apache-2.0、Kotlin 为 Apache-2.0，以各自项目为准 |
 
 ## 运行环境（不随本项目分发）
 
 | 组件 | 说明 | 许可证 |
 |---|---|---|
-| [LSPosed](https://github.com/LSPosed/LSPosed) | 模块加载框架（用户自行安装的独立项目，本项目不包含其代码） | GPL-3.0（仅框架自身，不构成对本项目的许可传染，因为本项目未链接/分发其代码） |
+| [LSPosed / Vector](https://github.com/JingMatrix/LSPosed) | 模块加载框架（用户自行安装的独立项目，本项目不包含其代码） | GPL-3.0（仅框架自身，本项目未链接/分发其代码） |
 | 荣耀钱包（HONOR Wallet） | 被注入的目标应用，本项目不包含其任何二进制或资源文件 | 闭源，版权归荣耀所有 |
 
 ## 字体与图片

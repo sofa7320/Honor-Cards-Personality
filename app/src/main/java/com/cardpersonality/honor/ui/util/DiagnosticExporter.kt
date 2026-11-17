@@ -157,6 +157,9 @@ object DiagnosticExporter {
             appendLine(engineJson.take(4000))
             appendLine("OPPO 引擎状态（getReport extra engine，截断）：")
             appendLine(providerCallExtra(ctx, "getReport", "engine").take(2000))
+            appendLine()
+            appendLine("--- 小米智能卡引擎（bridge HELLO 汇总，v0.2.13+）---")
+            appendLine("小米引擎：" + summarizeXiaomiEngine(bridgeJson))
         }
 
         section(sb, "4. 钱包与开关状态") {
@@ -341,9 +344,41 @@ object DiagnosticExporter {
         }
     }
 
-    /** Human summary of the OPPO engine JSON used for troubleshooting the read pipeline. */
-    private fun summarizeEngine(json: String): String {
+    /**
+     * Xiaomi smart-card engine summary from the merged bridge JSON: one entry per wallet process
+     * that sent a HELLO with `walletPackage == com.miui.tsmclient` (armed/hooks/cards/replacements).
+     */
+    private fun summarizeXiaomiEngine(json: String): String {
         return try {
+            val obj = org.json.JSONObject(json)
+            val processes = obj.optJSONArray("processes") ?: org.json.JSONArray()
+            val matches = ArrayList<String>()
+            for (i in 0 until processes.length()) {
+                val p = processes.optJSONObject(i) ?: continue
+                if (p.optString("walletPackage") != "com.miui.tsmclient") continue
+                matches.add(
+                    p.optString("processName").ifEmpty { "?" } +
+                        " armed=" + p.optBoolean("armed") +
+                        " hooks=" + p.optInt("installedCount") +
+                        " glide=" + p.optInt("glideHooks") +
+                        " factory=" + p.optInt("factoryHooks") +
+                        " cardInfo=" + p.optInt("cardInfoHooks") +
+                        " cards=" + p.optInt("cardCount") +
+                        " replace=" + p.optInt("replaceCount"),
+                )
+            }
+            if (matches.isEmpty()) {
+                "未收到小米智能卡进程心跳（未启用作用域 / 未打开过小米智能卡 / 未勾选 com.miui.tsmclient）"
+            } else {
+                matches.joinToString("；")
+            }
+        } catch (_: Throwable) {
+            "（无法解析 bridge JSON）"
+        }
+    }
+
+    /** Human summary of the OPPO engine JSON used for troubleshooting the read pipeline. */
+    private fun summarizeEngine(json: String): String {        return try {
             val obj = org.json.JSONObject(json)
             val pair = obj.optInt("pairCount", -1)
             val capture = obj.optInt("captureCount", -1)

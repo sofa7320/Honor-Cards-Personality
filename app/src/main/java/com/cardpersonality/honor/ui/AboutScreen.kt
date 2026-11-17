@@ -58,6 +58,7 @@ private const val GITHUB_ISSUES_URL = "https://github.com/sofa7320/Honor-Cards-P
 private const val MIUIX_URL = "https://github.com/compose-miuix-ui/miuix"
 private const val LSPOSED_URL = "https://github.com/LSPosed/LSPosed"
 private const val OPLUS_CARD_CUSTOMIZER_URL = "https://github.com/crrashh1542/oplus-card-customizer"
+private const val CARDFACE_MIUIX_URL = "https://github.com/MiamBao/cardface-miuix"
 
 /**
  * Miuix "About" page: app icon/name/version, the wallet versions this build supports, a link to the
@@ -127,7 +128,8 @@ fun AboutScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = "关于",
+                title = stringResource(R.string.app_name),
+                subtitle = "关于",
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
@@ -218,6 +220,20 @@ fun AboutScreen(
                             value = WalletPackages.OPPO_SUPPORTED_VERSION,
                             summary = WalletPackages.OPPO,
                         )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 18.dp)
+                                .height(0.5.dp)
+                                .background(
+                                    MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.2f),
+                                ),
+                        )
+                        AboutInfoRow(
+                            label = "小米智能卡",
+                            value = WalletPackages.XIAOMI_SUPPORTED_VERSION.ifEmpty { "待适配" },
+                            summary = WalletPackages.XIAOMI,
+                        )
                     }
                 }
             }
@@ -280,6 +296,19 @@ fun AboutScreen(
                     OpenSourceRow(
                         label = "oplus-card-customizer",
                         description = "OPPO 钱包卡面自定义支持（实现参考）",
+                    )
+                }
+            }
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    onClick = { openUrl(CARDFACE_MIUIX_URL) },
+                ) {
+                    OpenSourceRow(
+                        label = "卡面工坊",
+                        description = "为我提供了小米智能卡卡面自定义支持",
                     )
                 }
             }
@@ -518,6 +547,7 @@ private fun rememberLauncherIconBitmap(ctx: Context): ImageBitmap? {
         }.getOrNull()
     }
 }
+
 
 
 

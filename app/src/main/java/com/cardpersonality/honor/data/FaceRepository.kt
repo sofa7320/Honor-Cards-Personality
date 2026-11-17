@@ -297,7 +297,7 @@ object FaceRepository {
         exportFile(ctx, fileKey)?.delete()
         if (WalletScope.isHonor(wallet)) exportFile(ctx, key.fileKey)?.delete()
         notifyWalletConfigChanged(ctx)
-        if (WalletScope.isOppo(wallet)) {
+        if (WalletScope.usesLoopbackBridge(wallet)) {
             try {
                 com.cardpersonality.honor.data.bridge.PanelBridgeServer.ensureStarted(ctx)
                 com.cardpersonality.honor.data.bridge.PanelBridgeServer.pushConfig(ctx, allConfigsJson(ctx))
@@ -1225,13 +1225,13 @@ object FaceRepository {
     )
 
     /**
-     * Round-18: OPPO cards are not served through the ContentProvider (the OPPO wallet cannot
-     * resolve it). Push the full scoped config + our rendered JPEG through the loopback bridge so
-     * the wallet can replace the URL argument with the local file:// face.
+     * Round-18: OPPO and Xiaomi cards are not served through the ContentProvider (those wallets
+     * cannot resolve it). Push the full scoped config + our rendered JPEG through the loopback
+     * bridge so the wallet can replace the URL argument with the local file:// face.
      */
     private fun pushToWalletBridge(ctx: Context, key: CardKey, walletPackage: String?) {
         val wallet = WalletScope.normalize(walletPackage)
-        if (!WalletScope.isOppo(wallet)) return
+        if (!WalletScope.usesLoopbackBridge(wallet)) return
         try {
             val scoped = WalletScope.configFileKey(key, wallet)
             val export = exportFile(ctx, scoped)
@@ -1257,6 +1257,7 @@ object FaceRepository {
                 cfg.version,
                 export.readBytes(),
                 faceUrl,
+                wallet,
             )
             OpLog.record(ctx, "bridge", "push-face", "key=$scoped wallet=$wallet v=${cfg.version}")
         } catch (_: Throwable) {

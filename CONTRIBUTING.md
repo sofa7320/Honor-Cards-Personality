@@ -1,7 +1,7 @@
 # 贡献指南 / Contributing
 
-感谢你愿意为「荣耀卡面工坊」做贡献！本文说明开发环境、代码约定、提交流程与测试要求。
-提交 PR 即表示你同意你的贡献以本项目的 [Apache License 2.0](LICENSE) 许可发布。
+感谢你愿意为「药做卡面」做贡献！本文说明开发环境、代码约定、提交流程与测试要求。
+提交 PR 即表示你同意你的贡献以本项目的 [GPL-3.0](LICENSE) 许可发布。
 
 ## 目录
 
@@ -141,4 +141,4 @@ chore: 构建/依赖/杂项
 
 ## 许可证
 
-本项目以 [Apache License 2.0](LICENSE) 发布；第三方组件声明见 [NOTICE.md](NOTICE.md)。
+本项目以 [GNU General Public License v3.0](LICENSE) 发布；第三方组件声明见 [NOTICE.md](NOTICE.md)。

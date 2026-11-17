@@ -239,6 +239,7 @@ fun EditorScreen(
     var showRestoreDialog by remember { mutableStateOf(false) }
     var imageImporting by remember { mutableStateOf(false) }
     var originalFacePath by remember(target.key) { mutableStateOf<String?>(null) }
+    var faceUrlFallbackFailed by remember(target.key) { mutableStateOf(false) }
     var snapEnabled by remember { mutableStateOf(EditorPrefs.isSnapEnabled(ctx)) }
     var showFontPicker by remember { mutableStateOf(false) }
     var fontImporting by remember { mutableStateOf(false) }
@@ -352,20 +353,33 @@ fun EditorScreen(
 
     // Wallet's current (unmodified) face for this card, used as a dimmed backdrop and as the
     // "以当前卡面为底图" source when no custom image is configured.
-    LaunchedEffect(target.key) {
-        originalFacePath = withContext(Dispatchers.IO) {
+    LaunchedEffect(target.key, target.walletPackage, target.faceUrl) {
+        val loaded = withContext(Dispatchers.IO) {
             runCatching {
                 val card = FaceRepository.cards(ctx)
                     .firstOrNull { it.key.fileKey == target.key.fileKey }
-                if (card != null) {
-                    FaceRepository.ensureOriginalFace(ctx, card)?.absolutePath
+                val existing = if (card != null) {
+                    FaceRepository.ensureOriginalFace(ctx, card)
                 } else {
-                    FaceRepository.originalSnapshotFile(
-                        ctx, target.key.type, target.key.id,
-                    )?.absolutePath
+                    FaceRepository.originalSnapshotFile(ctx, target.key.type, target.key.id)
                 }
-            }.getOrNull()
+                if (existing != null) {
+                    existing.absolutePath to false
+                } else {
+                    // Round 24: wallet-native custom faces (e.g. access card cardPicUrl) may be
+                    // reported before the module could capture a local snapshot. Download the
+                    // URL directly for the editor background/preview.
+                    val downloaded =
+                        com.cardpersonality.honor.ui.util.FaceUrlFallback.ensureDownloaded(
+                            ctx, target.key.type, target.key.id, target.faceUrl,
+                        )
+                    (downloaded?.absolutePath) to
+                        (downloaded == null && !target.faceUrl.isNullOrBlank())
+                }
+            }.getOrElse { null to false }
         }
+        originalFacePath = loaded.first
+        faceUrlFallbackFailed = loaded.second
     }
 
     val sourcePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -633,15 +647,21 @@ fun EditorScreen(
                                 modifier = Modifier.size(30.dp),
                             )
                             Text(
-                                text = if (hasCurrentFace) "钱包当前卡面" else "还没有卡面图片",
+                                text = when {
+                                    hasCurrentFace -> "钱包当前卡面"
+                                    faceUrlFallbackFailed -> "钱包尚未渲染该卡，请先打开钱包卡包页"
+                                    else -> "请先打开钱包卡包页让钱包渲染一次该卡"
+                                },
                                 style = MiuixTheme.textStyles.body1,
                                 color = Color(0xCCFFFFFF),
                             )
                             Text(
                                 text = if (hasCurrentFace) {
                                     "以当前卡面为底图，或在下方选择新图片"
+                                } else if (faceUrlFallbackFailed) {
+                                    "打开钱包卡包页/详情页渲染该卡后返回本页刷新，或在下方「图片」中选择一张图片"
                                 } else {
-                                    "在下方「图片」中选择一张图片"
+                                    "在下方「图片」中选择图片；若卡片由钱包原生自定义，请先打开钱包卡包页渲染一次"
                                 },
                                 style = MiuixTheme.textStyles.footnote1,
                                 color = Color(0x99FFFFFF),
@@ -2421,6 +2441,7 @@ private fun List<StickerSpec>.move(from: Int, to: Int): List<StickerSpec> {
     list.add(to, item)
     return list
 }
+
 
 
 
