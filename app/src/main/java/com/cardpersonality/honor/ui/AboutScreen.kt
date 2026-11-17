@@ -55,6 +55,9 @@ import kotlinx.coroutines.launch
 
 private const val GITHUB_REPO_URL = "https://github.com/sofa7320/Honor-Cards-Personality"
 private const val GITHUB_ISSUES_URL = "https://github.com/sofa7320/Honor-Cards-Personality/issues/new"
+private const val MIUIX_URL = "https://github.com/compose-miuix-ui/miuix"
+private const val LSPOSED_URL = "https://github.com/LSPosed/LSPosed"
+private const val OPLUS_CARD_CUSTOMIZER_URL = "https://github.com/crrashh1542/oplus-card-customizer"
 
 /**
  * Miuix "About" page: app icon/name/version, the wallet versions this build supports, a link to the
@@ -68,6 +71,21 @@ fun AboutScreen(
 ) {
     var exporting by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val bridgeConnected = remember {
+        runCatching {
+            com.cardpersonality.honor.data.bridge.PanelBridgeServer.isConnected()
+        }.getOrDefault(false)
+    }
+    val bridgePort = remember {
+        runCatching {
+            com.cardpersonality.honor.data.bridge.PanelBridgeServer.port()
+        }.getOrDefault(0)
+    }
+    val bridgeHelloProcess = remember {
+        runCatching {
+            com.cardpersonality.honor.data.bridge.PanelBridgeServer.lastHelloProcess()
+        }.getOrDefault("")
+    }
     val launcherIcon = rememberLauncherIconBitmap(ctx)
     fun exportDiagnostics() {
         if (exporting) return
@@ -141,16 +159,16 @@ fun AboutScreen(
                             bitmap = launcherIcon,
                             contentDescription = null,
                             modifier = Modifier
-                                .size(72.dp)
-                                .clip(RoundedCornerShape(18.dp)),
+                                .size(96.dp)
+                                .clip(RoundedCornerShape(24.dp)),
                         )
                     } else {
                         Image(
                             painter = painterResource(R.drawable.ic_launcher_foreground),
                             contentDescription = null,
                             modifier = Modifier
-                                .size(72.dp)
-                                .clip(RoundedCornerShape(18.dp)),
+                                .size(96.dp)
+                                .clip(RoundedCornerShape(24.dp)),
                         )
                     }
                     Spacer(Modifier.height(14.dp))
@@ -203,7 +221,7 @@ fun AboutScreen(
                     }
                 }
             }
-            item { SmallTitle("链接") }
+            item { SmallTitle("反馈") }
             item {
                 Card(
                     modifier = Modifier
@@ -225,6 +243,46 @@ fun AboutScreen(
                 }
             }
 
+            item { SmallTitle("开源支持") }
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    onClick = { openUrl(MIUIX_URL) },
+                ) {
+                    OpenSourceRow(
+                        label = "Miuix",
+                        description = "界面组件与设计规范",
+                    )
+                }
+            }
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    onClick = { openUrl(LSPOSED_URL) },
+                ) {
+                    OpenSourceRow(
+                        label = "LSPosed",
+                        description = "Xposed 框架与模块加载",
+                    )
+                }
+            }
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    onClick = { openUrl(OPLUS_CARD_CUSTOMIZER_URL) },
+                ) {
+                    OpenSourceRow(
+                        label = "oplus-card-customizer",
+                        description = "OPPO 钱包卡面自定义支持（实现参考）",
+                    )
+                }
+            }
             item { SmallTitle("诊断") }
             item {
                 Card(
@@ -244,8 +302,12 @@ fun AboutScreen(
                             Text(
                                 text = if (exporting) {
                                     "正在收集设备 / Root / LSPosed / 操作记录…"
+                                } else if (bridgeConnected) {
+                                    "OPPO bridge：已连接（端口 $bridgePort，进程 ${bridgeHelloProcess.ifEmpty { "未知" }}）；" +
+                                        "点击导出设备 / Root / LSPosed / 操作记录"
                                 } else {
-                                    "设备、Root、LSPosed、钱包与操作记录 → Download/honor_cards_personality/logs"
+                                    "OPPO bridge：未连接（请打开欧加钱包并确认模块已启用 v44+）；" +
+                                        "点击导出设备 / Root / LSPosed / 操作记录"
                                 },
                                 style = MiuixTheme.textStyles.footnote1,
                                 color = MiuixTheme.colorScheme.onBackgroundVariant,
@@ -359,6 +421,40 @@ private fun AboutLinkRow(
     }
 }
 
+@Composable
+private fun OpenSourceRow(
+    label: String,
+    description: String,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MiuixTheme.textStyles.body1,
+                color = MiuixTheme.colorScheme.onBackground,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = description,
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onBackgroundVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Icon(
+            MiuixIcons.ChevronForward,
+            contentDescription = null,
+            tint = MiuixTheme.colorScheme.onBackgroundVariant,
+            modifier = Modifier.size(18.dp),
+        )
+    }
+}
+
 /**
  * Reads the real launcher icon (the same AdaptiveIconDrawable the desktop uses); avoids drawing a
  * look-alike vector and works with adaptive icons that Compose painterResource cannot decode.
@@ -368,7 +464,7 @@ private fun rememberLauncherIconBitmap(ctx: Context): ImageBitmap? {
     return remember(ctx) {
         runCatching {
             val drawable = ctx.packageManager.getApplicationIcon(ctx.packageName)
-            val size = 144
+            val size = 256
             val bitmap = android.graphics.Bitmap.createBitmap(
                 size,
                 size,
@@ -422,6 +518,9 @@ private fun rememberLauncherIconBitmap(ctx: Context): ImageBitmap? {
         }.getOrNull()
     }
 }
+
+
+
 
 
 

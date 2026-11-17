@@ -187,11 +187,11 @@ fun CardFacePreview(
             var cy = spec.cy
             listOf(wN / 2f, 0.5f, 1f - wN / 2f)
                 .minByOrNull { abs(cx - it) }
-                ?.takeIf { abs(cx - it) <= SNAP_FINAL_THRESHOLD }
+                ?.takeIf { abs(cx - it) <= SNAP_RELEASE_THRESHOLD }
                 ?.let { cx = it }
             listOf(hN / 2f, 0.5f, 1f - hN / 2f)
                 .minByOrNull { abs(cy - it) }
-                ?.takeIf { abs(cy - it) <= SNAP_FINAL_THRESHOLD }
+                ?.takeIf { abs(cy - it) <= SNAP_RELEASE_THRESHOLD }
                 ?.let { cy = it }
             if (cx != spec.cx || cy != spec.cy) {
                 latestOnChange(
@@ -205,8 +205,8 @@ fun CardFacePreview(
         } else {
             var oX = base.offsetX
             var oY = base.offsetY
-            if (abs(oX) <= SNAP_FINAL_THRESHOLD) oX = 0f
-            if (abs(oY) <= SNAP_FINAL_THRESHOLD) oY = 0f
+            if (abs(oX) <= SNAP_RELEASE_THRESHOLD) oX = 0f
+            if (abs(oY) <= SNAP_RELEASE_THRESHOLD) oY = 0f
             if (oX != base.offsetX || oY != base.offsetY) {
                 latestOnChange(base.copy(offsetX = oX, offsetY = oY))
             }
@@ -247,10 +247,9 @@ fun CardFacePreview(
                                         (1f - wN / 2f) to 1f,   // right edge -> canvas right edge
                                     )
                                     val best = candidates.minByOrNull { abs(newCx - it.first) }
-                                    if (best != null && abs(newCx - best.first) <= SNAP_ATTRACT_THRESHOLD) {
-                                        // Soft magnet: only pull part of the way so the element keeps
-                                        // following the finger and can still leave the anchor.
-                                        newCx += (best.first - newCx) * SNAP_ATTRACT_FACTOR
+                                    if (best != null && abs(newCx - best.first) <= SNAP_RELEASE_THRESHOLD) {
+                                        // Round 22: show the guide while dragging but never pull the
+                                        // sticker (no "一拽一拽"); the exact snap happens on release.
                                         snapGuideX = best.second
                                         anchorKey = "x:${best.second}"
                                     }
@@ -263,8 +262,7 @@ fun CardFacePreview(
                                         (1f - hN / 2f) to 1f,
                                     )
                                     val best = candidates.minByOrNull { abs(newCy - it.first) }
-                                    if (best != null && abs(newCy - best.first) <= SNAP_ATTRACT_THRESHOLD) {
-                                        newCy += (best.first - newCy) * SNAP_ATTRACT_FACTOR
+                                    if (best != null && abs(newCy - best.first) <= SNAP_RELEASE_THRESHOLD) {
                                         snapGuideY = best.second
                                         anchorKey = (anchorKey ?: "") + "y:${best.second}"
                                     }
@@ -337,13 +335,12 @@ fun CardFacePreview(
                         var snapGuideY: Float? = null
                         var anchorKey: String? = null
                         if (latestSnap) {
-                            if (abs(updated.offsetX) <= SNAP_ATTRACT_THRESHOLD) {
-                                updated = updated.copy(offsetX = updated.offsetX * (1f - SNAP_ATTRACT_FACTOR))
+                            // Guide only during the drag; offsets snap on release in finishSnap().
+                            if (abs(updated.offsetX) <= SNAP_RELEASE_THRESHOLD) {
                                 snapGuideX = 0.5f
                                 anchorKey = "imgx"
                             }
-                            if (abs(updated.offsetY) <= SNAP_ATTRACT_THRESHOLD) {
-                                updated = updated.copy(offsetY = updated.offsetY * (1f - SNAP_ATTRACT_FACTOR))
+                            if (abs(updated.offsetY) <= SNAP_RELEASE_THRESHOLD) {
                                 snapGuideY = 0.5f
                                 anchorKey = (anchorKey ?: "") + "imgy"
                             }
@@ -413,7 +410,7 @@ fun CardFacePreview(
                         val tapStartNanos = System.nanoTime()
                         // Hit-test in the freshest sticker-list order (index 0 = top-most layer).
                         val order = latestCfg.stickers.map { it.id }
-                        val hit = hitTest(latestBoxes, order, position)
+                        val hit = hitTest(latestBoxes, latestCfg.stickers, order, position)
                         // Diagnostics for z-order hit-testing: ordered ids (index 0 = top-most),
                         // the returned hit, and the boxes containing the tap point.
                         val ordered = order.filter { latestBoxes.containsKey(it) }
@@ -524,6 +521,7 @@ fun CardFacePreview(
         // so changing the selection never redraws/recomposes the card content.
         SelectionOverlay(
             boxes = stickerBoxes,
+            stickers = cfg.stickers,
             selectedState = selectedStickerIdState,
             guideX = guideX,
             guideY = guideY,
@@ -535,6 +533,7 @@ fun CardFacePreview(
 @Composable
 private fun SelectionOverlay(
     boxes: Map<String, Rect>,
+    stickers: List<StickerSpec>,
     selectedState: State<String?>,
     guideX: Float?,
     guideY: Float?,
@@ -545,15 +544,25 @@ private fun SelectionOverlay(
         if (selected != null) {
             val box = boxes[selected]
             if (box != null) {
-                drawRect(
-                    color = color,
-                    topLeft = Offset(box.left - 4f, box.top - 4f),
-                    size = androidx.compose.ui.geometry.Size(box.width + 8f, box.height + 8f),
-                    style = Stroke(
-                        width = 2.dp.toPx(),
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f)),
-                    ),
-                )
+                // Round 22: the dashed selection box follows the sticker's rotation (and the
+                // rotation gesture/animation) instead of staying axis-aligned.
+                val rotation = stickers.firstOrNull { it.id == selected }?.rot ?: 0f
+                withTransform({
+                    rotate(
+                        degrees = rotation,
+                        pivot = Offset(box.center.x, box.center.y),
+                    )
+                }) {
+                    drawRect(
+                        color = color,
+                        topLeft = Offset(box.left - 4f, box.top - 4f),
+                        size = androidx.compose.ui.geometry.Size(box.width + 8f, box.height + 8f),
+                        style = Stroke(
+                            width = 2.dp.toPx(),
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f)),
+                        ),
+                    )
+                }
             }
         }
         if (guideX != null) {
@@ -590,6 +599,8 @@ private const val ROTATION_SNAP_THRESHOLD = 11f
 private const val ROTATION_RELEASE_SNAP = 15f
 private const val SNAP_ATTRACT_THRESHOLD = 0.012f
 private const val SNAP_FINAL_THRESHOLD = 0.005f
+/** Release-time snap distance (normalized) for a smooth drag with snap-on-release. */
+private const val SNAP_RELEASE_THRESHOLD = 0.03f
 private const val SNAP_ATTRACT_FACTOR = 0.20f
 
 /**
@@ -793,15 +804,41 @@ private fun buildStickerBoxes(
     return out
 }
 
-private fun hitTest(boxes: Map<String, Rect>, orderedIds: List<String>, position: Offset): String? {
+private fun rotatePoint(point: Offset, pivot: Offset, degrees: Float): Offset {
+    if (degrees == 0f) return point
+    val rad = Math.toRadians(degrees.toDouble())
+    val cos = kotlin.math.cos(rad).toFloat()
+    val sin = kotlin.math.sin(rad).toFloat()
+    val dx = point.x - pivot.x
+    val dy = point.y - pivot.y
+    return Offset(
+        pivot.x + dx * cos - dy * sin,
+        pivot.y + dx * sin + dy * cos,
+    )
+}
+
+private fun hitTest(
+    boxes: Map<String, Rect>,
+    stickers: List<StickerSpec>,
+    orderedIds: List<String>,
+    position: Offset,
+): String? {
     // Walk the freshest sticker order (index 0 = top-most) so the TOP element wins the hit.
     for (id in orderedIds) {
         val rect = boxes[id] ?: continue
-        if (rect.contains(position)) return id
+        val rotation = stickers.firstOrNull { it.id == id }?.rot ?: 0f
+        val point = if (rotation == 0f) {
+            position
+        } else {
+            rotatePoint(position, rect.center, -rotation)
+        }
+        if (rect.contains(point)) return id
     }
     // Fallback: any box not present in the order list (should not happen).
     for ((id, rect) in boxes) {
-        if (rect.contains(position)) return id
+        val rotation = stickers.firstOrNull { it.id == id }?.rot ?: 0f
+        val point = if (rotation == 0f) position else rotatePoint(position, rect.center, -rotation)
+        if (rect.contains(point)) return id
     }
     return null
 }
@@ -867,6 +904,9 @@ fun EmptyFacePlaceholder(
             ),
     )
 }
+
+
+
 
 
 

@@ -26,6 +26,26 @@ import java.util.concurrent.Executors
  * JPEG <= 512 KB (provider enforces too); type whitelist only.
  */
 object FaceCapture {
+    /**
+     * Round-18: capture backend indirection. The Honor engine keeps using the provider backend
+     * (default); the OPPO engine swaps in the loopback-bridge backend because the OPPO wallet
+     * process cannot resolve our ContentProvider (and non-main processes have no Context).
+     */
+    interface Backend {
+        fun snapshotNeeded(type: String, id: String): Boolean
+        fun save(type: String, id: String, jpeg: ByteArray): Boolean
+    }
+
+    private val providerBackend = object : Backend {
+        override fun snapshotNeeded(type: String, id: String): Boolean =
+            ProviderClient.faceSnapshotNeeded(type, id)
+
+        override fun save(type: String, id: String, jpeg: ByteArray): Boolean =
+            ProviderClient.saveOriginalFace(type, id, jpeg)
+    }
+
+    @Volatile
+    var backend: Backend = providerBackend
     private const val MAX_STORED_BYTES = 3 * 1024 * 1024
     private const val MAX_LONG_SIDE = 2560 // only a safety cap for huge drawables
     private const val MAX_ATTEMPTS = 30
@@ -40,6 +60,47 @@ object FaceCapture {
 
     /** Guards against a second capture of the same key in this wallet process. */
     private val captured = ConcurrentHashMap<String, Long>()
+
+    /** Round-22: keys that must be re-captured after a reset / wallet face change. */
+    private val forced = ConcurrentHashMap.newKeySet<String>()
+
+    private val lastInvalidateAt = ConcurrentHashMap<String, Long>()
+    private const val INVALIDATE_DEBOUNCE_MS = 2_000L
+
+    /** Invalidates the once-per-process capture guard for one card (reset/native face change). */
+    fun invalidate(type: String, id: String) {
+        try {
+            val key = if (id.isBlank()) type else "$type:$id"
+            val now = System.currentTimeMillis()
+            val last = lastInvalidateAt[key] ?: 0L
+            lastInvalidateAt[key] = now
+            forced.add(key)
+            captured.remove(key)
+            if (now - last >= INVALIDATE_DEBOUNCE_MS) {
+                HLog.i("original capture invalidated $key")
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Round-23: editor open / back-to-panel — re-capture the current wallet face (incl. native). */
+    fun requestCapture(type: String, id: String) {
+        invalidate(type, id)
+    }
+
+    /** Config change (config cleared / face changed): allow every registered card to re-capture. */
+    fun invalidateAll() {
+        try {
+            val now = System.currentTimeMillis()
+            val lastAll = lastInvalidateAt["*"] ?: 0L
+            if (now - lastAll < INVALIDATE_DEBOUNCE_MS) return
+            lastInvalidateAt["*"] = now
+            forced.addAll(captured.keys)
+            captured.clear()
+            HLog.i("original capture invalidated for all cards")
+        } catch (_: Throwable) {
+        }
+    }
 
     private val pendingListeners = ConcurrentHashMap<ImageView, ViewTreeObserver.OnPreDrawListener>()
 
@@ -65,13 +126,14 @@ object FaceCapture {
         try {
             if (identity.type !in TYPE_WHITELIST) return
             val key = identity.fileKey
-            if (captured.containsKey(key)) return
+            if (captured.containsKey(key) && !forced.contains(key)) return
             if (pendingListeners.containsKey(view)) return
             val listener = object : ViewTreeObserver.OnPreDrawListener {
                 private var attempts = 0
                 override fun onPreDraw(): Boolean {
                     attempts++
-                    if (!view.isAttachedToWindow || attempts > MAX_ATTEMPTS || captured.containsKey(key)) {
+                    if (!view.isAttachedToWindow || attempts > MAX_ATTEMPTS ||
+                        (captured.containsKey(key) && !forced.contains(key))) {
                         cleanup(view)
                         return true
                     }
@@ -91,13 +153,14 @@ object FaceCapture {
     /** Main thread: copy the drawable bitmap, then hand processing to the worker. */
     private fun captureOnMain(view: ImageView, identity: CardIdentity) {
         try {
-            if (captured.containsKey(identity.fileKey)) {
+            if (captured.containsKey(identity.fileKey) && !forced.contains(identity.fileKey)) {
                 cleanup(view)
                 return
             }
             val drawable = view.drawable ?: return // not ready yet; the pre-draw listener retries
             val bitmap = drawableToBitmap(drawable) ?: return
             captured[identity.fileKey] = System.currentTimeMillis()
+            forced.remove(identity.fileKey)
             cleanup(view)
             executor.execute { processCapture(identity, bitmap) }
         } catch (t: Throwable) {
@@ -117,7 +180,7 @@ object FaceCapture {
                 }
                 return
             }
-            if (!ProviderClient.faceSnapshotNeeded(identity.type, identity.id)) return
+            if (!backend.snapshotNeeded(identity.type, identity.id)) return
             scaled = scaleDown(bitmap) // no-op for native assets (safety cap only)
             val bytes = encodeSnapshot(scaled)
             if (bytes == null || bytes.size > MAX_STORED_BYTES) {
@@ -126,7 +189,7 @@ object FaceCapture {
                 }
                 return
             }
-            val ok = ProviderClient.saveOriginalFace(identity.type, identity.id, bytes)
+            val ok = backend.save(identity.type, identity.id, bytes)
             HLog.limWithSummary("capture_ok", 8) {
                 "original-face snapshot ${identity.fileKey} bytes=${bytes.size} ok=$ok"
             }

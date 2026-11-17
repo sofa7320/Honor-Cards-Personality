@@ -3,9 +3,70 @@
 本文件记录「荣耀卡面工坊」的所有重要变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循语义化版本（`versionCode` 固定为 1，不随版本递增）。
 
+## 0.3.0 预发布系列（0.2.6 – 0.2.12）
+
+> 0.2.6～0.2.12 均为 **0.3.0 的预发布版本**（含 Pre-release 标签）。它们分别引入了多钱包框架、OPPO 静态适配、诊断与 bridge 通信、API 102 迁移、OPPO 保存与荣耀双向卡面等能力。
+> **0.3.0 正式发布时**，将把 0.2.6～0.2.12 的所有变更统一汇总为「自 0.2.5 以来的变更」写入 0.3.0 的发布说明与 CHANGELOG，届时本区间的逐版本条目保留为历史记录。
+
 ## [Unreleased]
 
 （暂无）
+
+## [0.2.12] - 2026-11-17
+
+> 本轮以 **Pre-release** 发布；通过 **Pull Request**（stacked）提交，不直接合并 `main`。
+
+### 修复
+- **OPPO 卡面保存不生效（第二轮）**：钱包渲染时使用的卡片 identity 可能与面板保存时不一致，导致替换始终未命中。新增**原始卡面 URL 精确匹配兜底**：bridge `PUT` 增加 `faceUrl`（Base64 第 5 段），钱包维护 URL→本地卡面映射（去 query/scheme/basename 别名），identity 未命中时按 URL 命中替换为 `file://`；新增 `oppo|put-ok/config-ok/replace-hit/replace-miss` 诊断日志。
+- **荣耀门禁卡「双向保存」预览**：进入编辑器或从钱包返回面板时，对未自定义卡面的卡去抖重新抓取钱包当前卡面（包含钱包原生自定义的门禁卡卡面）；重置后恢复钱包原生卡面且不覆盖钱包自身文件。`FaceCapture` 增加失效/重抓/全量失效（2s 去抖）。
+
+## [0.2.11] - 2026-11-17
+
+> 本轮以 **Pre-release** 发布；通过 **Pull Request**（stacked）提交，不直接合并 `main`。
+
+### 变更
+- **API 全量迁移到 libxposed API 102**：删除 legacy 入口（`assets/xposed_init`、manifest legacy meta-data）与 `xposed-stub`/`de.robv.android.xposed` 包；hook 兼容层改为内部 `com.cardpersonality.honor.hook.api` 包（内部使用 libxposed API 102）；仅保留 `META-INF/xposed/{module.prop,java_init.list,scope.list}` 现代元数据。
+
+### 修复
+- **OPPO 卡面保存不生效**：面板保存时 wallet 作用域误用荣耀钱包（诊断日志 `wallet=com.hihonor.wallet`）；现按卡片所属钱包（`com.finshell.wallet`）保存，并通过 bridge `CONFIG/PUT/DEL` 推送，钱包侧本地配置命中后以 `file://` 本地卡面替换。
+- **OPPO 占位卡**：「添加卡/添加交通卡/添加门禁卡」等占位项不再作为真实卡片上报/显示。
+- **荣耀自定义/重置后预览丢失**：钱包原生自定义卡面或模块「重置卡面」后，原图快照失效并重新抓取（新增 `refreshOriginal`），预览不再空白。
+- **编辑器**：元素旋转时虚线选择框跟随旋转；自动吸附与拖动冲突导致的「一拽一拽」已修复（拖动中不牵引、松手吸附/滞回）。
+
+## [0.2.10] - 2026-11-16
+
+> 本轮通过 **Pull Request**（stacked）提交，不直接合并 `main`；以 **Pre-release** 发布。
+> OPPO 系改动为静态移植实现，无需实机验证（维护者无 OPPO 设备）。
+
+### 新增
+- **OPPO 卡面能力移植**（参考朋友模块 `oplus-card-customizer` / com.crrashh.opcardcustomizer）：
+  - `CircleNetworkImageView` 14 个卡面入口方法全部覆盖（setImageUrl/setImageBitmap/e1/g1/j1/k1/d1/f1/h1/i1/a1/b1/setImageUrlByTemp/A0）。
+  - 覆盖 `FinBigCardFaceView`、`FinCustomCardView`、`FinSmallCardFaceView`、`FinUINfcCardFaceView` 容器方法；"是卡面"判定含 View 向上 8 层 parent 匹配容器。
+  - 11 个卡数据模型 getter 只读观测，记录 url→(aid/appCode/cardType/cardNo/name/balance)，按 getCardType() 与 appCode/aid 规则判定卡类型并上报（面板卡片显示名称/类型）。
+  - 替换采用朋友已验证的 `file://` 钱包私有目录方案：按长边≤1600、JPEG q88 递减≤700KB 落盘到钱包 `filesDir/oppo_faces/`，将参数替换为 file:// 路径交钱包 Glide 加载（保留圆角/缩放/缓存）；维护钱包侧 `cardpersonality_oppo_map.json` 缓存，provider 不可用时仍可替换。
+  - 诊断增加 widgetHits / fileReplacements / recordedModels；配置变更后通过 WeakReference 视图注册表重新加载。
+- **关于页「开源支持」**新增 `oplus-card-customizer` 行（白字标题 + 灰字说明，点击打开仓库）。
+
+## [0.2.9] - 2026-11-16
+
+> 本轮通过 **Pull Request**（stacked）提交，不直接合并 `main`，不发布 GitHub Release。
+> OPPO 系改动为静态实现，**无需实机验证**（维护者无 OPPO 设备）。
+
+### 新增
+- **关于页「开源支持」**：Miuix（https://github.com/compose-miuix-ui/miuix）与 LSPosed（https://github.com/LSPosed/LSPosed）两行，白字标题 + 灰字说明，可点击跳转。
+- OPPO 引擎诊断新增 `pairCount` / `captureCount` / `faceSource`（url/file/bitmap/none），OpLog 增加配对/抓图/本地读文件/预热记录。
+
+### 修复（OPPO/欧加钱包 5.52.0 读取链路）
+- 补上 OPPO 侧「抓原图」：无自定义卡面时 `FaceCapture.schedule(view, identity)`，面板可获取钱包原生卡面（此前 OPPO 引擎从不抓图，面板只能下载 URL，导致「读不到卡面」）。
+- 新增 L0 配对 hook：`QuickCardNfcCardView#h/setNfcCardData`、`cardframe.e#bindData`（`mCardImage`）、`DragonflyConsumeCardsFrameController#T/N`、`b0.a#d`、`FinUINfcCardFaceView#showCardImg`（`mThemeImg`）→ `viewToIdentity` 映射并立即 `recordCard` 上报，无需 URL 反查。
+- 进程内读取本地卡面：`file://` / 绝对路径归一化后由钱包进程（uid）直接 `File.readBytes()` 回传，解决面板无权限读取钱包私有目录的问题。
+- 卡类型映射修正：按 `NfcCard.getCardType()`（5/6/10/9/15/1/2/8/12/14/21/7/99/33）映射到 6 类，未知类型不上报（此前默认 transit）。
+- 替换卡面改为「URL → 钱包 cacheDir 本地 JPEG 路径」交给钱包 Glide 重新加载，保留原生圆角/缩放/缓存（此前直接 `setImageBitmap` 导致非首页卡片直角）。
+- 修正 `CircleNetworkImageView` hook 参数个数（g1=4/h1=2/j1=2，补 setSvgUrl/r1）、配置后台预热、URL 归一化 + 双表身份映射。
+
+### 界面
+- 关于页「链接」小标题更名为「反馈」。
+- 关于页软件图标放大，同步提高合成位图分辨率（与桌面图标一致）。
 
 ## [0.2.8] - 2026-11-16
 
@@ -130,7 +191,11 @@
 - 首个可用版本：荣耀钱包卡面替换（显示层 hook）、图片导入、文字/图片贴纸、Miuix 编辑面板、
   卡面预览与实时保存。
 
-[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.8...HEAD
+[Unreleased]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.12...HEAD
+[0.2.12]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.11...v0.2.12
+[0.2.11]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.10...v0.2.11
+[0.2.10]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.9...v0.2.10
+[0.2.9]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/sofa7320/Honor-Cards-Personality/compare/v0.2.5...v0.2.6

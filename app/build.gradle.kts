@@ -1,6 +1,6 @@
 // 卡面工坊 (Card Personality) app module.
 // - LSPosed module: legacy Xposed API (assets/xposed_init + xposedmodule meta-data),
-//   API classes come from compileOnly :xposed-stub and are NEVER packaged.
+//   API compat layer (de.robv shim) is packaged; modern libxposed API 102 is compileOnly.
 // - UI: Miuix 0.9.0 / Compose AndroidX 1.10.5.
 // Build ONLY through scripts/build.ps1 (exclusive lock).
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -23,7 +23,7 @@ android {
         //  - versionCode is permanently pinned to 1 (never auto-incremented; no script bumps it).
         //  - versionName is semantic and user-visible (shown in-app) — bump per release.
         versionCode = 1
-        versionName = "0.2.8"
+        versionName = "0.2.12"
     }
 
     buildFeatures {
@@ -102,7 +102,7 @@ kotlin {
 
 dependencies {
     // Legacy Xposed API: compile-only local stubs, never packaged into the APK.
-    compileOnly(project(":xposed-stub"))
+    compileOnly(files("libs/libxposed-api-102.jar"))
 
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.activity:activity-compose:1.13.0")

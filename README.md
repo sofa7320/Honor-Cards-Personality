@@ -214,6 +214,10 @@ pwsh -File scripts/build.ps1        # 默认 :app:assembleDebug
 
 | 版本        | 主要变更                                                                                                 |
 | --------- | ---------------------------------------------------------------------------------------------------- |
+| **0.2.12** | OPPO 卡面保存 URL 兜底（PUT faceUrl / URL→本地卡面映射 / replace-hit 诊断）；荣耀门禁卡双向预览（编辑器打开/返回去抖重抓钱包当前卡面，重置恢复原生卡面）；Pre-release |
+| **0.2.11** | 模块 API 全量迁移到 libxposed API 102（移除 legacy 入口/兼容包）；OPPO 卡面保存按所属钱包作用域修复、bridge CONFIG/PUT 下发、占位卡「添加卡」过滤；荣耀原生/重置后原图重抓；编辑器旋转虚线框跟随、吸附拖动抖动修复；Pre-release |
+| **0.2.10** | 移植朋友模块 oplus-card-customizer 的 OPPO 卡面读取/替换能力（CircleNetworkImageView 14 入口 + Fin* 容器、11 模型 getter 只读观测与 name/type/balance 上报、file:// 钱包私有目录替换、oppo 映射缓存、诊断计数）；关于页开源支持新增 oplus-card-customizer；Pre-release |
+| **0.2.9** | OPPO 读取链路修复（抓原图 FaceCapture、L0 配对并上报卡片、进程内读本地卡面文件、按 getCardType 修正类型映射、圆角安全的本地文件替换、CNIV 参数修正、engine_state pair/capture/faceSource）；关于页新增「开源支持」（Miuix/LSPosed）、「链接」改「反馈」、图标放大；PR 提交，不发 Release |
 | **0.2.8** | OPPO/欧加钱包 5.52.0 适配推进（A0/y0/x0/setSvgUrl/F0 入口、卡片上报兜底 identity、引擎诊断）；关于页返回/图标/文案修正，支持钱包仅两项；首页状态行仅包名；PR 提交，不发 Release |
 | **0.2.7** | 修复 OPPO/欧加设备检测不到钱包（`<queries>` 6 个候选钱包包 + scan_wallets）；关于页新增「导出诊断报告」（设备/root/属性/开关/LSPosed/操作记录 → Download/honor_cards_personality/logs）；新增 OpLog 操作日志；Pre-release |
 | **0.2.6** | 多钱包支持（荣耀钱包 + OPPO/欧加钱包 com.finshell.wallet 5.52.0）；钱包检测与配置按钱包隔离；OPPO 静态逆向卡面 hook（无实机验证）；按钱包区分卡面几何（荣耀 336:208 / OPPO 328:202）；首页「识别钱包包名」、关于页、刷新按钮生效、缩略图自动更新、组件按钱包显示 |
