@@ -13,57 +13,94 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.cardpersonality.honor.ui.theme.CardPersonalityTheme
+import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+/**
+ * Immutable navigation entry. Each transition renders from its own entry snapshot, so the outgoing
+ * editor keeps showing the editor (with its target) while sliding out — it never flips to Home.
+ */
+sealed interface NavEntry {
+    val key: String
+    val depth: Int
+
+    data class Home(val snapshot: HomeSnapshot?) : NavEntry {
+        override val key: String = "__home__"
+        override val depth: Int = 0
+    }
+
+    data class Editor(val target: EditorTarget) : NavEntry {
+        override val key: String = "editor:${target.key.fileKey}"
+        override val depth: Int = 1
+    }
+
+    data object About : NavEntry {
+        override val key: String = "__about__"
+        override val depth: Int = 1
+    }
+}
 
 /**
  * Root composable of 药做卡面 (hosted by [com.cardpersonality.honor.MainActivity]).
  *
- * State-based navigation: Home <-> Editor / About. Round 25: Miuix-style horizontal slide
- * transition (forward = new page from the right, back = old page to the right) with a light fade,
- * 300 ms, FastOutSlowIn. Layout/state handling is unchanged.
+ * Round 31: navigation uses immutable [NavEntry] snapshots kept in a registry for the duration of
+ * the transition. The outgoing page therefore renders its own entry (editor stays an editor) and
+ * Home refresh/thumbnail work is paused until the slide finishes.
  */
 @Composable
 fun CardPersonalityApp() {
     CardPersonalityTheme {
         val ctx = LocalContext.current
-        var editorTarget by remember { mutableStateOf<EditorTarget?>(null) }
-        var showAbout by remember { mutableStateOf(false) }
-        // Round 28: keep the Home snapshot + scroll position across editor navigation so returning
-        // does not reload/rebuild the list or flash a loading state.
         var homeSnapshot by remember { mutableStateOf<HomeSnapshot?>(null) }
         val homeListState = androidx.compose.foundation.lazy.rememberLazyListState()
-        val target = editorTarget
+        var navEntry by remember { mutableStateOf<NavEntry>(NavEntry.Home(null)) }
+        val entries = remember { mutableStateMapOf<String, NavEntry>() }
+        var transitionActive by remember { mutableStateOf(false) }
 
-        // Round 12: system back from About returns to the app's Home screen, not the launcher.
-        BackHandler(enabled = showAbout) { showAbout = false }
+        // Keep every visited entry until its slide-out has finished (outgoing content needs it).
+        LaunchedEffect(navEntry) { entries[navEntry.key] = navEntry }
 
-        data class Screen(val key: String, val depth: Int)
-        val screen = when {
-            target != null -> Screen("editor:${target.key.fileKey}", 1)
-            showAbout -> Screen("__about__", 1)
-            else -> Screen("__home__", 0)
+        val navKey = navEntry.key
+        LaunchedEffect(navKey) {
+            transitionActive = true
+            delay(400)
+            transitionActive = false
+            // Drop stale entries only after the transition has completed.
+            entries.keys.filter { it != navKey }.forEach { entries.remove(it) }
         }
+
+        fun go(entry: NavEntry) {
+            transitionActive = true
+            navEntry = entry
+        }
+
         val slideSpec = tween<androidx.compose.ui.unit.IntOffset>(
             durationMillis = 300,
             easing = FastOutSlowInEasing,
         )
         val fadeSpec = tween<Float>(durationMillis = 300, easing = FastOutSlowInEasing)
 
-        // Round 29: targetState is a stable string key (not a data object) so Home snapshot/reload
-        // updates can never retrigger the transition (fixes the perceived double slide on back).
+        // Round 12: system back from About returns to the app's Home screen, not the launcher.
+        BackHandler(enabled = navEntry is NavEntry.About) {
+            go(NavEntry.Home(homeSnapshot))
+        }
+
         AnimatedContent(
-            targetState = screen.key,
+            targetState = navKey,
             transitionSpec = {
-                val fromDepth = if (initialState == "__home__") 0 else 1
-                val toDepth = if (targetState == "__home__") 0 else 1
-                val forward = toDepth >= fromDepth
+                // Forward: Home -> (Editor/About): new page from the right, old page to the left.
+                // Back: current page slides out to the right, Home enters from the left. Only one
+                // transition can run because targetState only changes when navEntry changes.
+                val forward = initialState == "__home__" && targetState != "__home__"
                 if (forward) {
                     (slideInHorizontally(slideSpec) { it } + fadeIn(fadeSpec)) togetherWith
                         (slideOutHorizontally(slideSpec) { -it / 4 } + fadeOut(fadeSpec))
@@ -74,28 +111,37 @@ fun CardPersonalityApp() {
             },
             label = "screen-slide",
         ) { currentKey ->
+            val entry = entries[currentKey] ?: navEntry
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(MiuixTheme.colorScheme.background),
             ) {
-                when {
-                    currentKey.startsWith("editor:") && target != null -> EditorScreen(
+                when (entry) {
+                    is NavEntry.Editor -> EditorScreen(
                         ctx = ctx,
-                        target = target,
-                        onDone = { editorTarget = null },
+                        target = entry.target,
+                        onDone = {
+                            if (navEntry is NavEntry.Editor) {
+                                go(NavEntry.Home(homeSnapshot))
+                            }
+                        },
                     )
-                    currentKey == "__about__" -> AboutScreen(
+                    NavEntry.About -> AboutScreen(
                         ctx = ctx,
-                        onBack = { showAbout = false },
+                        onBack = { go(NavEntry.Home(homeSnapshot)) },
                     )
-                    else -> HomeScreen(
+                    is NavEntry.Home -> HomeScreen(
                         ctx = ctx,
-                        onOpenEditor = { editorTarget = it },
-                        onOpenAbout = { showAbout = true },
-                        initialSnapshot = homeSnapshot,
-                        onSnapshot = { homeSnapshot = it },
+                        onOpenEditor = { go(NavEntry.Editor(it)) },
+                        onOpenAbout = { go(NavEntry.About) },
+                        initialSnapshot = entry.snapshot ?: homeSnapshot,
+                        onSnapshot = { snapshot ->
+                            homeSnapshot = snapshot
+                            entries["__home__"] = NavEntry.Home(snapshot)
+                        },
                         listState = homeListState,
+                        allowAutoRefresh = !transitionActive,
                     )
                 }
             }
@@ -103,6 +149,5 @@ fun CardPersonalityApp() {
     }
 }
 
-
-
+private val NavEntry.CompanionHolder: Unit get() = Unit
 
