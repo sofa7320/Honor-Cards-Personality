@@ -83,19 +83,32 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** Snapshot of Home data kept by AppRoot so returning from the editor does not reload/flash. */
+data class HomeSnapshot(
+    val cards: List<CardInfo>,
+    val reportUpdatedAt: Long,
+    val storeVersion: Int,
+)
+
 /** Home: cards reported by the hook (grouped by family) + per-type default entries. */
 @Composable
 fun HomeScreen(
     ctx: Context,
     onOpenEditor: (EditorTarget) -> Unit,
     onOpenAbout: () -> Unit = {},
+    initialSnapshot: HomeSnapshot? = null,
+    onSnapshot: (HomeSnapshot) -> Unit = {},
+    listState: androidx.compose.foundation.lazy.LazyListState =
+        androidx.compose.foundation.lazy.rememberLazyListState(),
 ) {
-    var cards by remember { mutableStateOf<List<CardInfo>>(emptyList()) }
+    var cards by remember { mutableStateOf(initialSnapshot?.cards ?: emptyList()) }
     var reloadKey by remember { mutableIntStateOf(0) }
-    var reportUpdatedAt by remember { mutableStateOf(0L) }
-    var loading by remember { mutableStateOf(true) }
+    var reportUpdatedAt by remember { mutableStateOf(initialSnapshot?.reportUpdatedAt ?: 0L) }
+    var loading by remember { mutableStateOf(initialSnapshot == null) }
     var moduleConnected by remember { mutableStateOf<Boolean?>(null) }
-    var storeVersion by remember { mutableIntStateOf(0) }
+    var hasLoadedOnce by remember { mutableStateOf(initialSnapshot != null) }
+    var manualRefresh by remember { mutableStateOf(false) }
+    var storeVersion by remember { mutableIntStateOf(initialSnapshot?.storeVersion ?: 0) }
     var detectedWallets by remember { mutableStateOf<List<WalletPackages.InstalledWallet>>(emptyList()) }
     var walletSnapshot by remember { mutableStateOf<WalletsSnapshot?>(null) }
     var oppoEngineStatus by remember { mutableStateOf<OppoEngineStatus?>(null) }
@@ -127,7 +140,10 @@ fun HomeScreen(
     }
 
     LaunchedEffect(reloadKey) {
-        loading = true
+        // Round 28: returning from the editor reuses the retained snapshot and refreshes silently
+        // (no full-page loading / list rebuild); only the manual refresh button shows a spinner.
+        if (!hasLoadedOnce || manualRefresh) loading = true
+        manualRefresh = false
         val loadResult = runCatching {
             withContext(Dispatchers.IO) {
                 // Round 18: bridge is the OPPO IPC path; ensure it is listening before reading state.
@@ -156,6 +172,8 @@ fun HomeScreen(
                 oppoEngineStatus = OppoEngineProbe.query(ctx)
             }
         }
+        hasLoadedOnce = true
+        onSnapshot(HomeSnapshot(cards, reportUpdatedAt, storeVersion))
         moduleConnected = withContext(Dispatchers.IO) {
             runCatching {
                 ctx.contentResolver.call(
@@ -216,7 +234,7 @@ fun HomeScreen(
                 title = stringResource(R.string.app_name),
                 subtitle = "钱包卡面自定义",
                 actions = {
-                    IconButton(onClick = { if (!loading) reloadKey++ }) {
+                    IconButton(onClick = { if (!loading) { manualRefresh = true; reloadKey++ } }) {
                         if (loading) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp))
                         } else {
@@ -228,6 +246,7 @@ fun HomeScreen(
         },
     ) { innerPadding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 top = innerPadding.calculateTopPadding(),
@@ -833,7 +852,6 @@ private fun CardFaceRowThumbnail(
         cfg.hasCustomFace,
         card.lastSeen,
         card.faceUrl,
-        refreshToken,
         thumbTargetPx,
     ) {
         value = withContext(Dispatchers.IO) {
@@ -1066,6 +1084,8 @@ private fun formatTime(millis: Long): String {
         ""
     }
 }
+
+
 
 
 

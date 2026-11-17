@@ -385,7 +385,7 @@ object FaceTypefaces {
 /** Small decode cache so repeated provider/thumbnail renders don't re-decode the same file. */
 object FaceImageLoader {
     /** Byte-budgeted decode cache (round 26: prevents huge candidate bitmaps piling up). */
-    private val cache = object : LruCache<String, Bitmap>(96 * 1024 * 1024) {
+    private val cache = object : LruCache<String, Bitmap>(64 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
@@ -645,9 +645,9 @@ object FaceRenderer {
         val imagePath = FaceImageLoader.resolvePath(ctx, cfg.imagePath)
         // Round 26: cap the decoded size near the output size (avoid OOM on 8K photos), and retry
         // with a fresh full decode when the cached/sampled decode fails (background loss bug).
-        val decodeCap = max(width.toInt(), height.toInt())
-            .let { (it * 1.25f).toInt() }
-            .coerceIn(1024, 4096)
+        // Round 28: cap the decoded background at the output long side (3072 max) to keep the 10x
+        // save PSS down; any remaining upscale is done by the canvas.
+        val decodeCap = max(width.toInt(), height.toInt()).coerceIn(1024, 3072)
         var image = FaceImageLoader.load(imagePath, decodeCap)
         if (image == null && !imagePath.isNullOrEmpty()) {
             FaceImageLoader.evict(imagePath)
@@ -780,7 +780,7 @@ object FaceRenderer {
         val dstW = (spec.w.coerceIn(0.05f, 2f) * width).coerceAtLeast(8f)
         // Round 26: decode stickers at the resolution the final output actually needs (was a fixed
         // 1536 px -> blurry when a sticker covers a large part of a high-res export).
-        val stickerCap = (dstW * 1.5f).toInt().coerceIn(1024, 4096)
+        val stickerCap = (dstW * 1.25f).toInt().coerceIn(1024, 3072)
         val image = FaceImageLoader.load(path, stickerCap) ?: return
         if (image.isRecycled || image.width <= 0) return
         val dstH = dstW * image.height / image.width
@@ -1154,6 +1154,7 @@ object ScaledFaceCache {
         return scaled
     }
 }
+
 
 
 
