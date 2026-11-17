@@ -91,7 +91,9 @@ fun CardFacePreview(
     onCfgChange: (CardFaceConfig) -> Unit = {},
     onStickerSelected: (String?) -> Unit = {},
 ) {
-    val viewCfg = cfgState?.value ?: cfg
+    // Round 29: composition reads the parent cfg only; gesture updates live in cfgState and are
+    // consumed in the draw phase (Canvas/SelectionOverlay), so dragging never recomposes this.
+    val viewCfg = cfg
     val faceSpec = FaceGeometry.specFor(walletPackage)
     val radius: Dp = cornerRadius ?: faceSpec.cornerRadiusDp.dp
     val image = rememberFaceImageBitmap(viewCfg.imagePath, 1280)
@@ -219,7 +221,7 @@ fun CardFacePreview(
         val W = sizePx.width.toFloat()
         val H = sizePx.height.toFloat()
         if (W <= 0f || H <= 0f) return
-        val base = latestCfg
+        val base = cfgState?.value ?: latestCfg
         val selectedId = selectedStickerIdState.value
         if (selectedId != null) {
             val idx = base.stickers.indexOfFirst { it.id == selectedId }
@@ -262,7 +264,7 @@ fun CardFacePreview(
         Modifier
             .pointerInput(image, viewCfg.stickers.size, snapEnabled) {
                 detectTransformGestures(panZoomLock = false) { centroid, pan, zoom, rotation ->
-                    val base = latestCfg
+                    val base = cfgState?.value ?: latestCfg
                     val canvasW = size.width.toFloat()
                     val canvasH = size.height.toFloat()
                     val selectedId = selectedStickerIdState.value
@@ -502,69 +504,6 @@ fun CardFacePreview(
             .background(Color(0xFF16181D))
             .onSizeChanged { sizePx = it },
     ) {
-<<<<<<< Updated upstream
-        Canvas(modifier = Modifier.fillMaxSize().then(gestureModifier)) {
-            drawRect(
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color(0xFF2B2F3A),
-                        Color(0xFF16181D),
-                        Color(0xFF0E0F12),
-                    ),
-                ),
-            )
-            if (image != null) {
-                val placement = FaceGeometry.placement(
-                    imageWidth = image.width.toFloat(),
-                    imageHeight = image.height.toFloat(),
-                    canvasWidth = size.width,
-                    canvasHeight = size.height,
-                    cfg = viewCfg,
-                )
-                val centerX = placement.dx + placement.destWidth / 2f
-                val centerY = placement.dy + placement.destHeight / 2f
-                withTransform({
-                    if (viewCfg.flipX || viewCfg.flipY) {
-                        // Mirror about the destination center, then apply cover placement.
-                        translate(centerX, centerY)
-                        scale(
-                            if (viewCfg.flipX) -1f else 1f,
-                            if (viewCfg.flipY) -1f else 1f,
-                            Offset.Zero,
-                        )
-                        translate(-centerX, -centerY)
-                    }
-                    translate(placement.dx, placement.dy)
-                    scale(placement.scale, placement.scale, Offset.Zero)
-                }) {
-                    drawImage(image)
-                }
-            } else if (backgroundImage != null) {
-                // Wallet's current face as a dimmed, non-interactive backdrop.
-                val placement = FaceGeometry.placement(
-                    imageWidth = backgroundImage.width.toFloat(),
-                    imageHeight = backgroundImage.height.toFloat(),
-                    canvasWidth = size.width,
-                    canvasHeight = size.height,
-                    cfg = CardFaceConfig(),
-                )
-                withTransform({
-                    translate(placement.dx, placement.dy)
-                    scale(placement.scale, placement.scale, Offset.Zero)
-                }) {
-                    drawImage(backgroundImage, alpha = 0.65f)
-                }
-                drawRect(color = Color(0x33000000))
-            }
-            val designScale = size.width / faceSpec.designWidth
-            // List index 0 is the TOP-most layer -> draw in reverse so 0 lands on top.
-            for (spec in viewCfg.stickers.asReversed()) {
-                if (!spec.visible) continue
-                when (spec.kind) {
-                    StickerKind.IMAGE -> drawImageSticker(spec, stickerBitmaps)
-                    else -> drawTextSticker(spec, textMeasurer, density.density, density.fontScale, designScale)
-                }
-=======
         val previewStyleKey = buildString {
             append(viewCfg.imagePath).append('|').append(backgroundImagePath).append('|')
             append(viewCfg.flipX).append(viewCfg.flipY).append('|')
@@ -573,7 +512,6 @@ fun CardFacePreview(
             viewCfg.stickers.forEach { spec ->
                 append(spec.id).append(',').append(spec.cx).append(',').append(spec.cy)
                     .append(',').append(spec.rot).append(';')
->>>>>>> Stashed changes
             }
         }
         Canvas(modifier = Modifier.fillMaxSize().then(gestureModifier)) {
@@ -626,7 +564,9 @@ fun CardFacePreview(
         // so changing the selection never redraws/recomposes the card content.
         SelectionOverlay(
             boxes = stickerBoxes,
+            sizes = stickerSizes,
             stickers = viewCfg.stickers,
+            cfgState = cfgState,
             selectedState = selectedStickerIdState,
             guideX = guideX,
             guideY = guideY,
@@ -707,7 +647,9 @@ private fun DrawScope.drawPreviewScene(
 @Composable
 private fun SelectionOverlay(
     boxes: Map<String, Rect>,
+    sizes: Map<String, Pair<Float, Float>>,
     stickers: List<StickerSpec>,
+    cfgState: androidx.compose.runtime.MutableState<CardFaceConfig>?,
     selectedState: State<String?>,
     guideX: Float?,
     guideY: Float?,
@@ -716,11 +658,24 @@ private fun SelectionOverlay(
     val selected = selectedState.value
     Canvas(modifier = Modifier.fillMaxSize()) {
         if (selected != null) {
-            val box = boxes[selected]
+            // Round 29: follow the live gesture state in the draw phase (no recomposition needed).
+            val liveSpec = cfgState?.value?.stickers?.firstOrNull { it.id == selected }
+            val liveSize = sizes[selected]
+            val box = if (liveSpec != null && liveSize != null) {
+                val cx = liveSpec.cx * size.width
+                val cy = liveSpec.cy * size.height
+                Rect(
+                    left = cx - liveSize.first / 2f,
+                    top = cy - liveSize.second / 2f,
+                    right = cx + liveSize.first / 2f,
+                    bottom = cy + liveSize.second / 2f,
+                )
+            } else {
+                boxes[selected]
+            }
             if (box != null) {
-                // Round 22: the dashed selection box follows the sticker's rotation (and the
-                // rotation gesture/animation) instead of staying axis-aligned.
-                val rotation = stickers.firstOrNull { it.id == selected }?.rot ?: 0f
+                // Round 22: the dashed selection box follows the sticker's rotation.
+                val rotation = (liveSpec ?: stickers.firstOrNull { it.id == selected })?.rot ?: 0f
                 withTransform({
                     rotate(
                         degrees = rotation,
@@ -1116,8 +1071,6 @@ fun EmptyFacePlaceholder(
 
 
 
-<<<<<<< Updated upstream
-=======
 
 
 
@@ -1126,4 +1079,3 @@ fun EmptyFacePlaceholder(
 
 
 
->>>>>>> Stashed changes
