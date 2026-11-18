@@ -753,6 +753,10 @@ internal class TextStickerPlan(
     val glowRadiusPx: Float,
     val strokeWidthPx: Float,
     val fontSizePx: Float,
+    val glowColorPainted: Int,
+    val glowRadiusDp: Float,
+    /** Same colour with a minimum alpha so radius=1 glow is still visible. */
+    val glowColorPaintedFloor: Int,
     /** Glow/stroke text pre-rendered on a software bitmap (hardware canvases ignore shadow layers). */
     @Volatile var offscreen: android.graphics.Bitmap? = null,
 )
@@ -773,14 +777,7 @@ private fun buildTextStickerPlan(spec: StickerSpec, designScale: Float): TextSti
         textSize = fontSize
         this.typeface = typeface
         isUnderlineText = spec.underline
-        if (spec.glow && spec.glowRadius > 0f) {
-            setShadowLayer(
-                spec.glowRadius * designScale,
-                0f,
-                0f,
-                withStickerAlpha(spec.glowColor, stickerAlpha),
-            )
-        }
+        // Round-34 fix: the offscreen glow pass owns the glow (no legacy shadow layer).
     }
     val strokePaint = if (spec.stroke && spec.strokeWidth > 0f) {
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -810,6 +807,13 @@ private fun buildTextStickerPlan(spec: StickerSpec, designScale: Float): TextSti
         glowRadiusPx = spec.glowRadius * designScale,
         strokeWidthPx = if (spec.stroke) spec.strokeWidth * designScale else 0f,
         fontSizePx = fontSize,
+        glowColorPainted = withStickerAlpha(spec.glowColor, stickerAlpha),
+        glowRadiusDp = spec.glowRadius,
+        glowColorPaintedFloor = run {
+            val base = withStickerAlpha(spec.glowColor, stickerAlpha)
+            val a = maxOf(android.graphics.Color.alpha(base), (0.35f * 255f).toInt())
+            (base and 0x00FFFFFF) or (a shl 24)
+        },
     )
 }
 
@@ -830,6 +834,19 @@ private fun DrawScope.drawTextSticker(spec: StickerSpec, plan: TextStickerPlan?)
         }
         if (out != null) {
             native.drawBitmap(out, cx - out.width / 2f, cy - out.height / 2f, null)
+        } else {
+            // Never let the whole text disappear: degrade to the direct draw path.
+            android.util.Log.w(
+                "CARD_PERSONALITY_PERF", "text offscreen render failed; fallback direct draw",
+            )
+            var fallbackBaseline = cy - plan.totalHeight / 2f - plan.ascent
+            for (line in plan.lines) {
+                if (plan.strokePaint != null) {
+                    native.drawText(line, cx, fallbackBaseline, plan.strokePaint)
+                }
+                native.drawText(line, cx, fallbackBaseline, plan.fillPaint)
+                fallbackBaseline += plan.lineHeight
+            }
         }
     } else {
         var baseline = cy - plan.totalHeight / 2f - plan.ascent
@@ -849,13 +866,11 @@ private fun renderTextOffscreen(plan: TextStickerPlan): android.graphics.Bitmap?
     for (line in plan.lines) {
         textWidth = maxOf(textWidth, plan.fillPaint.measureText(line))
     }
-    // Round 33: separate X/Y padding; glow radius, stroke half-width and italic overhang must all
-    // fit or radius=1 / italic / underline text gets clipped at the bitmap edges.
-    val basePad = maxOf(
-        plan.glowRadiusPx * 2.2f,
-        plan.strokeWidthPx * 0.75f + 4f,
-        8f,
-    )
+    // Round 34: explicit glow pass needs generous padding (radius*3 + stroke + 8); large radii
+    // were clipped before. Add italic overhang horizontally.
+    val maxGlowRadius = plan.glowRadiusPx.coerceAtLeast(2f)
+    val glowPad = maxGlowRadius * 2.5f + plan.strokeWidthPx + 8f
+    val basePad = maxOf(glowPad, 8f)
     val italicExtra = plan.fontSizePx * 0.22f
     val padX = basePad + italicExtra
     val padY = basePad
@@ -867,20 +882,54 @@ private fun renderTextOffscreen(plan: TextStickerPlan): android.graphics.Bitmap?
     val canvas = android.graphics.Canvas(bitmap)
     val centered = android.graphics.Paint(plan.fillPaint).apply {
         textAlign = android.graphics.Paint.Align.CENTER
+        clearShadowLayer()
     }
     val centeredStroke = plan.strokePaint?.let { paint ->
         android.graphics.Paint(paint).apply { textAlign = android.graphics.Paint.Align.CENTER }
     }
-    // Round 33: first-line baseline must match the normal draw path exactly:
-    //   normal global baseline = cy - totalHeight/2 - ascent
-    //   bitmap is drawn at    cy - totalHeight/2 - padY
-    //   => bitmap-local baseline = padY - ascent (old formula shifted text by ~(d-a)/2).
+    // Round 36: multi-layer glow (same rule as the export): a broad outer halo + a tight inner
+    // core, each drawn twice source-over, so r1 is visible and r48 does not fade out.
+    val glowLayers: List<Pair<android.graphics.Paint, Int>> = if (plan.glowRadiusPx > 0f) {
+        val outerRadius = plan.glowRadiusPx.coerceAtLeast(2f)
+        val outerAlpha = (0.35f + 0.55f * (plan.glowRadiusDp / 48f)).coerceIn(0.35f, 0.9f)
+        val innerRadius = (outerRadius * 0.4f).coerceAtLeast(2f)
+        fun layerColor(base: Int, factor: Float): Int {
+            val a = (android.graphics.Color.alpha(base) * factor).toInt().coerceIn(0, 255)
+            return (base and 0x00FFFFFF) or (a shl 24)
+        }
+        fun layer(radius: Float, alpha: Float) =
+            android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                textAlign = android.graphics.Paint.Align.CENTER
+                color = layerColor(plan.glowColorPainted, alpha)
+                textSize = plan.fontSizePx
+                typeface = plan.fillPaint.typeface
+                style = android.graphics.Paint.Style.FILL
+                maskFilter = android.graphics.BlurMaskFilter(
+                    radius, android.graphics.BlurMaskFilter.Blur.NORMAL,
+                )
+            }
+        listOf(layer(outerRadius, outerAlpha) to 2, layer(innerRadius, 0.85f) to 2)
+    } else {
+        emptyList()
+    }
+    // Round 33 baseline alignment: bitmapTop = cy - totalHeight/2 - padY.
+    val baselines = FloatArray(plan.lines.size)
     var baseline = padY - fm.ascent
-    for (line in plan.lines) {
-        if (centeredStroke != null) canvas.drawText(line, width / 2f, baseline, centeredStroke)
-        canvas.drawText(line, width / 2f, baseline, centered)
+    for (i in plan.lines.indices) {
+        baselines[i] = baseline
         baseline += plan.lineHeight
     }
+    for ((paint, repeats) in glowLayers) {
+        repeat(repeats) {
+            for (i in plan.lines.indices) {
+                canvas.drawText(plan.lines[i], width / 2f, baselines[i], paint)
+            }
+        }
+    }
+    if (centeredStroke != null) {
+        for (i in plan.lines.indices) canvas.drawText(plan.lines[i], width / 2f, baselines[i], centeredStroke)
+    }
+    for (i in plan.lines.indices) canvas.drawText(plan.lines[i], width / 2f, baselines[i], centered)
     bitmap
 } catch (_: Throwable) {
     null
@@ -1115,6 +1164,11 @@ fun EmptyFacePlaceholder(
             ),
     )
 }
+
+
+
+
+
 
 
 

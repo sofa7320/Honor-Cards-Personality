@@ -459,7 +459,6 @@ fun EditorScreen(
                     originalFacePath = found
                     faceUrlFallbackFailed = false
                     placeholderFacePath = null
-                    Toast.makeText(ctx, "已获取钱包卡面", Toast.LENGTH_SHORT).show()
                 }
                 return@LaunchedEffect
             }
@@ -489,7 +488,6 @@ fun EditorScreen(
             originalFacePath = found
             faceUrlFallbackFailed = false
             placeholderFacePath = null
-            Toast.makeText(ctx, "已获取钱包卡面", Toast.LENGTH_SHORT).show()
         }
     }
     val sourcePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -2588,6 +2586,7 @@ private fun List<StickerSpec>.move(from: Int, to: Int): List<StickerSpec> {
     list.add(to, item)
     return list
 }
+
 
 
 
