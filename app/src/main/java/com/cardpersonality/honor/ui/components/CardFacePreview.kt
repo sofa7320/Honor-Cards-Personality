@@ -147,6 +147,9 @@ fun CardFacePreview(
         listOf(
             spec.id, spec.kind, spec.text, spec.sizeDp, spec.w, spec.fontFamily,
             spec.fontWeight, spec.italic, spec.underline, spec.customFontPath,
+            // Round 32: every field that affects text rendering must invalidate the cache.
+            spec.color, spec.alpha, spec.stroke, spec.strokeWidth, spec.strokeColor,
+            spec.glow, spec.glowColor, spec.glowRadius, spec.visible,
         ).joinToString(",")
     }
     val stickerBoxes: Map<String, Rect> = remember(
@@ -746,6 +749,10 @@ internal class TextStickerPlan(
     val lineHeight: Float,
     val totalHeight: Float,
     val ascent: Float,
+    val glow: Boolean,
+    val glowRadiusPx: Float,
+    /** Glow/stroke text pre-rendered on a software bitmap (hardware canvases ignore shadow layers). */
+    @Volatile var offscreen: android.graphics.Bitmap? = null,
 )
 
 /** Builds the per-sticker text plan; called from a composition-scoped remember (not per frame). */
@@ -797,6 +804,8 @@ private fun buildTextStickerPlan(spec: StickerSpec, designScale: Float): TextSti
         lineHeight = lineHeight,
         totalHeight = lineHeight * lines.size,
         ascent = fm.ascent,
+        glow = spec.glow && spec.glowRadius > 0f,
+        glowRadiusPx = spec.glowRadius * designScale,
     )
 }
 
@@ -804,18 +813,60 @@ private fun DrawScope.drawTextSticker(spec: StickerSpec, plan: TextStickerPlan?)
     if (plan == null || spec.text.isBlank()) return
     val cx = spec.cx * size.width
     val cy = spec.cy * size.height
-    var baseline = cy - plan.totalHeight / 2f - plan.ascent
     val native = drawContext.canvas.nativeCanvas
     native.save()
     native.rotate(FaceGeometry.clampRotation(spec.rot), cx, cy)
-    for (line in plan.lines) {
-        // Outline first, then fill on top: the fill covers the inner half of the stroke so only
-        // the outer edge remains visible (identical to the exporter).
-        if (plan.strokePaint != null) native.drawText(line, cx, baseline, plan.strokePaint)
-        native.drawText(line, cx, baseline, plan.fillPaint)
-        baseline += plan.lineHeight
+    if (plan.glow) {
+        // Round 32: shadow layers are ignored by some hardware canvases; render glow/stroke text
+        // once into a software bitmap and draw that instead.
+        var out = plan.offscreen
+        if (out == null || out.isRecycled) {
+            out = renderTextOffscreen(plan)
+            plan.offscreen = out
+        }
+        if (out != null) {
+            native.drawBitmap(out, cx - out.width / 2f, cy - out.height / 2f, null)
+        }
+    } else {
+        var baseline = cy - plan.totalHeight / 2f - plan.ascent
+        for (line in plan.lines) {
+            if (plan.strokePaint != null) native.drawText(line, cx, baseline, plan.strokePaint)
+            native.drawText(line, cx, baseline, plan.fillPaint)
+            baseline += plan.lineHeight
+        }
     }
     native.restore()
+}
+
+/** Renders text (with glow/stroke shadow layers) to a software bitmap once per style. */
+private fun renderTextOffscreen(plan: TextStickerPlan): android.graphics.Bitmap? = try {
+    val fm = plan.fillPaint.fontMetrics
+    var textWidth = 0f
+    for (line in plan.lines) {
+        textWidth = maxOf(textWidth, plan.fillPaint.measureText(line))
+    }
+    val pad = (plan.glowRadiusPx * 2.2f + 8f).coerceAtLeast(8f)
+    val width = (textWidth + pad * 2f).toInt().coerceAtLeast(4)
+    val height = (plan.totalHeight + pad * 2f).toInt().coerceAtLeast(4)
+    val bitmap = android.graphics.Bitmap.createBitmap(
+        width, height, android.graphics.Bitmap.Config.ARGB_8888,
+    )
+    val canvas = android.graphics.Canvas(bitmap)
+    val centered = android.graphics.Paint(plan.fillPaint).apply {
+        textAlign = android.graphics.Paint.Align.CENTER
+    }
+    val centeredStroke = plan.strokePaint?.let { paint ->
+        android.graphics.Paint(paint).apply { textAlign = android.graphics.Paint.Align.CENTER }
+    }
+    var baseline = pad + (fm.descent - fm.ascent) / 2f - fm.ascent
+    for (line in plan.lines) {
+        if (centeredStroke != null) canvas.drawText(line, width / 2f, baseline, centeredStroke)
+        canvas.drawText(line, width / 2f, baseline, centered)
+        baseline += plan.lineHeight
+    }
+    bitmap
+} catch (_: Throwable) {
+    null
 }
 /** Multiplies a packed ARGB color's alpha by [alpha] (0..1). */
 private fun withStickerAlpha(color: Int, alpha: Float): Int {
@@ -1047,6 +1098,7 @@ fun EmptyFacePlaceholder(
             ),
     )
 }
+
 
 
 

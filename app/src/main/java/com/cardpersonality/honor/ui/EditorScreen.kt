@@ -14,8 +14,11 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.State
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
@@ -246,6 +249,11 @@ fun EditorScreen(
     var imageImporting by remember { mutableStateOf(false) }
     var originalFacePath by remember(target.key) { mutableStateOf<String?>(null) }
     var faceUrlFallbackFailed by remember(target.key) { mutableStateOf(false) }
+    // Round 32: while the wallet has not rendered this card yet we show a neutral placeholder and
+    // retry the original-face recapture in the background (1.5 s x 10 = 15 s) + on ON_RESUME.
+    var placeholderFacePath by remember(target.key) { mutableStateOf<String?>(null) }
+    var acquisitionTimedOut by remember(target.key) { mutableStateOf(false) }
+    var resumeRetryTick by remember { mutableIntStateOf(0) }
     var snapEnabled by remember { mutableStateOf(EditorPrefs.isSnapEnabled(ctx)) }
     // Round 25: export quality (1x..10x) persisted globally and applied to all renders/exports.
     val initialExportScale = remember(target.key) {
@@ -341,11 +349,18 @@ fun EditorScreen(
         if (saving) return
         saving = true
         scope.launch {
+            // Round 32: if the wallet face never arrived, persist the neutral placeholder as the
+            // base image so the saved face keeps its background instead of the bare gradient.
+            val cfgToSave = if (cfg.imagePath == null && placeholderFacePath != null) {
+                cfg.copy(imagePath = placeholderFacePath)
+            } else {
+                cfg
+            }
             val saveOk = withContext(Dispatchers.IO) {
                 runCatching {
                     // Round 25: render happens inside saveCard, so apply the chosen quality first.
                     com.cardpersonality.honor.FaceRenderer.setExportScale(exportScale)
-                    FaceRepository.saveCard(ctx, target.key, cfg, target.walletPackage)
+                    FaceRepository.saveCard(ctx, target.key, cfgToSave, target.walletPackage)
                     // Round 23: explicit OPPO URL-fallback PUT using the card's reported faceUrl.
                     runCatching {
                         com.cardpersonality.honor.ui.util.OppoFaceUrlPush.push(
@@ -354,7 +369,7 @@ fun EditorScreen(
                     }
                     // Round 26: verify the export actually rendered (background decode can fail on
                     // huge images); never report success for an empty/failed card face.
-                    if (cfg.imagePath != null) {
+                    if (cfgToSave.imagePath != null) {
                         val export = FaceRepository.exportFileFor(
                             ctx, target.key.type, target.key.id, target.walletPackage,
                         )
@@ -381,35 +396,102 @@ fun EditorScreen(
     }
     // Wallet's current (unmodified) face for this card, used as a dimmed backdrop and as the
     // "以当前卡面为底图" source when no custom image is configured.
-    LaunchedEffect(target.key, target.walletPackage, target.faceUrl) {
-        val loaded = withContext(Dispatchers.IO) {
-            runCatching {
-                val card = FaceRepository.cards(ctx)
-                    .firstOrNull { it.key.fileKey == target.key.fileKey }
-                val existing = if (card != null) {
-                    FaceRepository.ensureOriginalFace(ctx, card)
-                } else {
-                    FaceRepository.originalSnapshotFile(ctx, target.key.type, target.key.id)
-                }
-                if (existing != null) {
-                    existing.absolutePath to false
-                } else {
-                    // Round 24: wallet-native custom faces (e.g. access card cardPicUrl) may be
-                    // reported before the module could capture a local snapshot. Download the
-                    // URL directly for the editor background/preview.
-                    val downloaded =
-                        com.cardpersonality.honor.ui.util.FaceUrlFallback.ensureDownloaded(
-                            ctx, target.key.type, target.key.id, target.faceUrl,
-                        )
-                    (downloaded?.absolutePath) to
-                        (downloaded == null && !target.faceUrl.isNullOrBlank())
-                }
-            }.getOrElse { null to false }
-        }
-        originalFacePath = loaded.first
-        faceUrlFallbackFailed = loaded.second
+    suspend fun loadWalletFace(): Pair<String?, Boolean> = withContext(Dispatchers.IO) {
+        runCatching {
+            val card = FaceRepository.cards(ctx)
+                .firstOrNull { it.key.fileKey == target.key.fileKey }
+            val existing = if (card != null) {
+                FaceRepository.ensureOriginalFace(ctx, card)
+            } else {
+                FaceRepository.originalSnapshotFile(ctx, target.key.type, target.key.id)
+            }
+            if (existing != null) {
+                existing.absolutePath to false
+            } else {
+                // Round 24: wallet-native custom faces (e.g. access card cardPicUrl) may be
+                // reported before the module could capture a local snapshot. Download the URL
+                // directly for the editor background/preview.
+                val downloaded =
+                    com.cardpersonality.honor.ui.util.FaceUrlFallback.ensureDownloaded(
+                        ctx, target.key.type, target.key.id, target.faceUrl,
+                    )
+                (downloaded?.absolutePath) to
+                    (downloaded == null && !target.faceUrl.isNullOrBlank())
+            }
+        }.getOrElse { null to false }
     }
 
+    LaunchedEffect(target.key, target.walletPackage, target.faceUrl) {
+        // Round 32: ask the hook/provider for a fresh capture right away.
+        runCatching {
+            withContext(Dispatchers.IO) {
+                FaceRepository.refreshOriginalSnapshots(ctx, target.key.type, target.key.id)
+            }
+        }
+        val loaded = loadWalletFace()
+        if (loaded.first != null) {
+            originalFacePath = loaded.first
+            faceUrlFallbackFailed = false
+            placeholderFacePath = null
+        } else {
+            faceUrlFallbackFailed = loaded.second
+            placeholderFacePath = withContext(Dispatchers.IO) {
+                com.cardpersonality.honor.ui.util.PlaceholderFace.ensure(
+                    ctx, target.key.type, target.key.id, target.title,
+                )?.absolutePath
+            }
+        }
+    }
+
+    // Retry recapture every ~1.5 s for 15 s, then stop (the user can still pick their own image).
+    LaunchedEffect(target.key, target.walletPackage) {
+        if (originalFacePath != null) return@LaunchedEffect
+        repeat(10) {
+            kotlinx.coroutines.delay(1500)
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    FaceRepository.refreshOriginalSnapshots(ctx, target.key.type, target.key.id)
+                }
+            }
+            val found = loadWalletFace().first
+            if (found != null) {
+                if (cfg.imagePath == null) {
+                    originalFacePath = found
+                    faceUrlFallbackFailed = false
+                    placeholderFacePath = null
+                    Toast.makeText(ctx, "已获取钱包卡面", Toast.LENGTH_SHORT).show()
+                }
+                return@LaunchedEffect
+            }
+        }
+        acquisitionTimedOut = true
+    }
+
+    // Round 32: one more recapture attempt when the app returns to the foreground (e.g. the user
+    // visited the wallet card page and came back).
+    val editorLifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(editorLifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) resumeRetryTick++
+        }
+        editorLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { editorLifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(resumeRetryTick) {
+        if (resumeRetryTick == 0 || originalFacePath != null) return@LaunchedEffect
+        runCatching {
+            withContext(Dispatchers.IO) {
+                FaceRepository.refreshOriginalSnapshots(ctx, target.key.type, target.key.id)
+            }
+        }
+        val found = loadWalletFace().first
+        if (found != null && cfg.imagePath == null) {
+            originalFacePath = found
+            faceUrlFallbackFailed = false
+            placeholderFacePath = null
+            Toast.makeText(ctx, "已获取钱包卡面", Toast.LENGTH_SHORT).show()
+        }
+    }
     val sourcePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             imageImporting = true
@@ -654,7 +736,7 @@ fun EditorScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .widthIn(max = 420.dp),
-                        backgroundImagePath = if (cfg.imagePath == null) originalFacePath else null,
+                        backgroundImagePath = if (cfg.imagePath == null) (originalFacePath ?: placeholderFacePath) else null,
                         snapEnabled = snapEnabled,
                         onCfgChange = { updated ->
                             cfg = updated
@@ -679,8 +761,8 @@ fun EditorScreen(
                             Text(
                                 text = when {
                                     hasCurrentFace -> "钱包当前卡面"
-                                    faceUrlFallbackFailed -> "钱包尚未渲染该卡，请先打开钱包卡包页"
-                                    else -> "请先打开钱包卡包页让钱包渲染一次该卡"
+                                    acquisitionTimedOut -> "钱包暂未返回该卡卡面，可直接选择图片"
+                                    else -> "正在向钱包获取该卡卡面…（可直接选择图片）"
                                 },
                                 style = MiuixTheme.textStyles.body1,
                                 color = Color(0xCCFFFFFF),
@@ -688,10 +770,10 @@ fun EditorScreen(
                             Text(
                                 text = if (hasCurrentFace) {
                                     "以当前卡面为底图，或在下方选择新图片"
-                                } else if (faceUrlFallbackFailed) {
-                                    "打开钱包卡包页/详情页渲染该卡后返回本页刷新，或在下方「图片」中选择一张图片"
+                                } else if (acquisitionTimedOut) {
+                                    "可先在下方「图片」中选择图片；稍后打开钱包卡包页渲染该卡，返回后会自动更新底图"
                                 } else {
-                                    "在下方「图片」中选择图片；若卡片由钱包原生自定义，请先打开钱包卡包页渲染一次"
+                                    "已显示中性占位底图，可直接编辑/选择图片；获取到钱包卡面后会自动替换"
                                 },
                                 style = MiuixTheme.textStyles.footnote1,
                                 color = Color(0x99FFFFFF),
@@ -2506,6 +2588,10 @@ private fun List<StickerSpec>.move(from: Int, to: Int): List<StickerSpec> {
     list.add(to, item)
     return list
 }
+
+
+
+
 
 
 
