@@ -407,8 +407,10 @@ class FaceProvider : ContentProvider() {
             out.putString(EXTRA_ERROR, "not a JPEG")
             return
         }
+        val source = extras?.getString("source")?.takeIf { it.isNotBlank() } ?: "wallet"
         val file = originalFile(ctx, type, id)
         if (file.isFile && file.length() == data.size.toLong()) {
+            OpLog.record(ctx, "bridge", "original-ok", "$type:$id source=$source skipped=true")
             out.putBoolean(EXTRA_OK, true)
             out.putBoolean(EXTRA_SKIPPED, true)
             return
@@ -422,6 +424,7 @@ class FaceProvider : ContentProvider() {
                 tmp.renameTo(file)
             }
             Log.i(TAG, "saveOriginalFace $type bytes=${data.size} (key=${file.name})")
+            OpLog.record(ctx, "bridge", "original-ok", "$type:$id source=$source bytes=${data.size}")
             out.putBoolean(EXTRA_OK, true)
             out.putBoolean(EXTRA_SKIPPED, false)
         } catch (t: Throwable) {

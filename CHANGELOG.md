@@ -11,6 +11,12 @@
 
 （暂无）
 
+## [0.2.21] - 2026-11-18
+
+### 修复
+- **文字元素的发光与描边效果失效**：文字缓存键补齐 `color/alpha/stroke/strokeWidth/strokeColor/glow/glowColor/glowRadius/visible`，样式变化立即重建；预览改为把文字+发光/描边离屏渲染到软件 Bitmap（不再依赖硬件 Canvas 的 `setShadowLayer`），拖动帧复用；导出仍走软件 Canvas，光晕/描边可见。
+- **门禁卡偶现「钱包尚未渲染该卡」**：无原图时不再阻断编辑——生成中性占位底图（按卡类型/卡名渐变）可直接选图/加元素/保存；打开编辑器自动请求钱包重抓（`RECAPTURE_ORIGINAL`），每 1.5s 重试共 15s + 从钱包返回时再试，原图到达后自动替换底图。模块侧补充 ACCESS 原图来源：wallet view 抓取、内置资源（`faceId`）、钱包私有缓存文件，均上报 source（view/resource/file/url）。
+
 ## [0.2.18] - 2026-11-18
 
 ### 修复

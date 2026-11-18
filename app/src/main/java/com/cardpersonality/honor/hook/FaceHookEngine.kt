@@ -107,6 +107,10 @@ private const val ACTION_RECAPTURE = "com.cardpersonality.honor.RECAPTURE_ORIGIN
     private val detected = ConcurrentHashMap<String, CardInfo>()
     /** Round-25: last AccessCard object per card (for model-field recapture). */
     private val accessModels = ConcurrentHashMap<String, WeakReference<Any>>()
+    /** Round-32: last bound AccessCard ImageView per card (re-capture even when model is gone). */
+    private val accessViews = ConcurrentHashMap<String, WeakReference<ImageView>>()
+    /** Round-32: panel asked for a fresh ACCESS original; capture on the next render too. */
+    private val accessPendingCapture = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val lastReportAt = AtomicLong(0L)
     private val bindCount = AtomicLong(0L)
     private val nn0Count = AtomicLong(0L)
@@ -565,16 +569,82 @@ private const val ACTION_RECAPTURE = "com.cardpersonality.honor.RECAPTURE_ORIGIN
             HLog.limWithSummary("recapture_req", 6) { "recapture requested $type:$id" }
             if (type != com.cardpersonality.honor.data.CardTypes.ACCESS) return
             val identity = CardIdentity(type, id, "", "")
-            val ref = accessModels[identity.fileKey]
-            val card = ref?.get() ?: return
-            val faceIdText = readFieldString(card, "faceId")
-            val faceId = faceIdText?.toLongOrNull()
-            val url = readFieldString(card, "cardPicUrl")
-            val cl = walletClassLoader ?: return
             val ctx = context ?: return
-            captureAccessModel(cl, ctx, identity, faceId, url)
+            val cl = walletClassLoader ?: return
+            // Also capture on the next xi#j render even if the model/view registry is empty.
+            accessPendingCapture.add(identity.fileKey)
+            val ref = accessModels[identity.fileKey]
+            val card = ref?.get()
+            if (card != null) {
+                val faceIdText = readFieldString(card, "faceId")
+                val faceId = faceIdText?.toLongOrNull()
+                val url = readFieldString(card, "cardPicUrl")
+                captureAccessModel(cl, ctx, identity, faceId, url, "recapture")
+            }
+            // Renderer may have the view already laid out (no further xi#j call): capture it now.
+            val viewRef = accessViews[identity.fileKey]
+            val view = viewRef?.get()
+            if (view != null) {
+                captureAccessView(ctx, view, identity, readFaceId(card))
+            }
         } catch (t: Throwable) {
             HLog.lim("recapture_err", 3) { "recapture failed: ${t.javaClass.simpleName}: ${t.message}" }
+        }
+    }
+
+    private fun readFaceId(card: Any?): String? = try {
+        if (card == null) null else readFieldString(card, "faceId")
+    } catch (_: Throwable) {
+        null
+    }
+
+    /** Round-32: capture the already-rendered ACCESS view when no new model render arrives. */
+    private fun captureAccessView(ctx: Context, view: ImageView, identity: CardIdentity, faceIdText: String?) {
+        try {
+            view.postDelayed({
+                try {
+                    val drawable = view.drawable ?: run {
+                        noteAccessCapturePending(identity, "view-empty")
+                        return@postDelayed
+                    }
+                    val w = drawable.intrinsicWidth
+                    val h = drawable.intrinsicHeight
+                    if (w <= 0 || h <= 0) {
+                        noteAccessCapturePending(identity, "view-zero")
+                        return@postDelayed
+                    }
+                    val bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                    val canvas = android.graphics.Canvas(bitmap)
+                    drawable.setBounds(0, 0, w, h)
+                    drawable.draw(canvas)
+                    val out = ByteArrayOutputStream()
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+                    bitmap.recycle()
+                    val bytes = out.toByteArray()
+                    val faceId = faceIdText?.toLongOrNull()
+                    val ok = FaceCapture.saveModelSnapshot(identity.type, identity.id, bytes, faceIdText)
+                    if (ok) {
+                        ProviderClient.logOp("bridge", "original-ok", "${identity.type}:${identity.id} source=view bytes=${bytes.size}")
+                        HLog.limWithSummary("access_original_ok", 6) {
+                            "ACCESS original from view ${identity.fileKey} bytes=${bytes.size}"
+                        }
+                    } else {
+                        noteAccessCapturePending(identity, "view-save")
+                    }
+                } catch (t: Throwable) {
+                    noteAccessCapturePending(identity, t.javaClass.simpleName)
+                }
+            }, 350L)
+        } catch (t: Throwable) {
+            noteAccessCapturePending(identity, t.javaClass.simpleName)
+        }
+    }
+
+    private fun noteAccessCapturePending(identity: CardIdentity, reason: String) {
+        HLog.lim("access_capture_pending", 6) { "ACCESS original pending ${identity.fileKey} reason=$reason" }
+        try {
+            ProviderClient.logOp("access", "capture-pending", "${identity.type}:${identity.id} $reason")
+        } catch (_: Throwable) {
         }
     }
 
@@ -606,6 +676,7 @@ private const val ACTION_RECAPTURE = "com.cardpersonality.honor.RECAPTURE_ORIGIN
                     val custom = faceId != null && (faceId >= 1000L || faceId <= -1000L)
                     val reportedUrl = if (custom) url?.takeIf { it.isNotBlank() && it != "null" } else null
                     accessModels[identity.fileKey] = WeakReference(card)
+                    accessViews[identity.fileKey] = WeakReference(imageView)
                     recordCard(identity, reportedUrl, faceIdText)
                     HLog.limWithSummary("xi_record", 8) {
                         "xi#j access ${identity.fileKey} faceId=$faceIdText custom=$custom url=${reportedUrl?.take(60)}"
@@ -626,11 +697,12 @@ private const val ACTION_RECAPTURE = "com.cardpersonality.honor.RECAPTURE_ORIGIN
                         }
                         return
                     }
-                    if (FaceCapture.shouldCaptureModel(identity.type, identity.id, faceIdText)) {
+                    val pendingRecapture = accessPendingCapture.remove(identity.fileKey)
+                    if (pendingRecapture || FaceCapture.shouldCaptureModel(identity.type, identity.id, faceIdText)) {
                         HLog.limWithSummary("xi_capture_model", 6) {
                             "xi#j deterministic capture ${identity.fileKey} faceId=$faceIdText"
                         }
-                        captureAccessModel(cl, ctx, identity, faceId, url)
+                        captureAccessModel(cl, ctx, identity, faceId, url, "model")
                     }
                 } catch (t: Throwable) {
                     HLog.lim("xi_before_err", 3) { "xi#j before hook failed: ${t.javaClass.simpleName}: ${t.message}" }
@@ -639,15 +711,25 @@ private const val ACTION_RECAPTURE = "com.cardpersonality.honor.RECAPTURE_ORIGIN
         })
     }
 
-    /** Round-25: deterministic door-face capture from AccessCard model fields (never drawable). */
-    private fun captureAccessModel(cl: ClassLoader, ctx: Context, identity: CardIdentity, faceId: Long?, url: String?) {
+    /** Round-25/32: deterministic door-face capture from AccessCard model fields (never drawable). */
+    private fun captureAccessModel(
+        cl: ClassLoader,
+        ctx: Context,
+        identity: CardIdentity,
+        faceId: Long?,
+        url: String?,
+        reason: String
+    ) {
         Thread({
             var bytes: ByteArray? = null
+            var source = "none"
             try {
                 val custom = faceId != null && (faceId >= 1000L || faceId <= -1000L)
                 if (custom && !url.isNullOrBlank()) {
                     bytes = httpGetBytes(url)
-                } else if (faceId != null) {
+                    if (bytes != null) source = "url"
+                }
+                if (bytes == null && faceId != null) {
                     val resId = resolveFaceRes(cl, faceId)
                     if (resId != 0) {
                         val bmp = try {
@@ -660,19 +742,104 @@ private const val ACTION_RECAPTURE = "com.cardpersonality.honor.RECAPTURE_ORIGIN
                             bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
                             bmp.recycle()
                             bytes = out.toByteArray()
+                            source = "resource"
                         }
                     }
+                }
+                if (bytes == null) {
+                    bytes = findWalletCachedFace(ctx, identity, faceId)
+                    if (bytes != null) source = "file"
                 }
             } catch (_: Throwable) {
             }
             try {
                 val ok = FaceCapture.saveModelSnapshot(identity.type, identity.id, bytes, faceId?.toString())
+                if (ok) {
+                    ProviderClient.logOp(
+                        "bridge",
+                        "original-ok",
+                        "${identity.type}:${identity.id} source=$source bytes=${bytes?.size ?: 0}"
+                    )
+                } else {
+                    noteAccessCapturePending(identity, "model-$source")
+                }
                 HLog.limWithSummary("xi_capture_model_ok", 6) {
-                    "xi#j model snapshot ${identity.fileKey} ok=$ok bytes=${bytes?.size ?: 0}"
+                    "xi#j model snapshot ${identity.fileKey} ok=$ok source=$source bytes=${bytes?.size ?: 0} reason=$reason"
                 }
             } catch (_: Throwable) {
             }
         }, "cardpersonality-door-capture").apply { isDaemon = true }.start()
+    }
+
+    /**
+     * Round-32: wallet-native custom faces may also be cached in the wallet's private dirs. Read-only
+     * scan of common face-cache locations, matched by faceId / card id / filename key.
+     */
+    private fun findWalletCachedFace(ctx: Context, identity: CardIdentity, faceId: Long?): ByteArray? {
+        val dirs = listOf(
+            java.io.File(ctx.filesDir, "cardface"),
+            java.io.File(ctx.filesDir, "card_face"),
+            java.io.File(ctx.filesDir, "accesscard"),
+            java.io.File(ctx.cacheDir, "cardface"),
+            java.io.File(ctx.cacheDir, "image_cache"),
+            java.io.File(ctx.cacheDir, "glide"),
+            java.io.File(ctx.filesDir, "cache")
+        )
+        val needles = listOfNotNull(
+            faceId?.toString(),
+            identity.id,
+            identity.fileKey
+        ).filter { it.length >= 3 }
+        for (dir in dirs) {
+            if (!dir.isDirectory) continue
+            val files = try {
+                dir.listFiles() ?: continue
+            } catch (_: Throwable) {
+                continue
+            }
+            for (f in files) {
+                if (f.isDirectory) {
+                    // one level of subdirectories (glide/... layouts)
+                    try {
+                        f.listFiles()?.forEach { sub ->
+                            if (sub.isFile && matchesFaceNeedle(sub.name, needles) && sub.length() in 1024..(3L * 1024 * 1024)) {
+                                return readImageBytes(sub)
+                            }
+                        }
+                    } catch (_: Throwable) {
+                    }
+                    continue
+                }
+                if (!f.isFile) continue
+                if (f.length() !in 1024..(3L * 1024 * 1024)) continue
+                if (!matchesFaceNeedle(f.name, needles)) continue
+                return readImageBytes(f)
+            }
+        }
+        return null
+    }
+
+    private fun matchesFaceNeedle(name: String, needles: List<String>): Boolean {
+        val n = name.lowercase()
+        return needles.any { needle -> n.contains(needle.lowercase()) }
+    }
+
+    private fun readImageBytes(file: java.io.File): ByteArray? {
+        return try {
+            val bytes = file.readBytes()
+            if (bytes.size < 4) return null
+            val isJpeg = bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte()
+            val isPng = bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte()
+            if (isJpeg) return bytes
+            if (!isPng) return null
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+            val out = ByteArrayOutputStream()
+            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+            bmp.recycle()
+            out.toByteArray()
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     /** f06.a(faceId, 0) -> bundled classic face resource id (door spec §2.1). */
