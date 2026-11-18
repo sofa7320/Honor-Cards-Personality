@@ -5,6 +5,7 @@ import android.util.Log
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
@@ -730,16 +731,34 @@ object FaceRenderer {
             textSize = fontSize
             this.typeface = typeface
             isUnderlineText = spec.underline
-            if (spec.glow && spec.glowRadius > 0f) {
-                setShadowLayer(
-                    spec.glowRadius * designScale,
-                    0f,
-                    0f,
-                    withAlpha(spec.glowColor, stickerAlpha),
-                )
-            }
+            // Round-34 fix: glow is drawn by the explicit blurred fill pass below.
         }
-        val strokePaint = if (spec.stroke && spec.strokeWidth > 0f) {
+        // Round 34: explicit blurred glow pass (same as the preview); reliable for large radii where a
+    // shadow layer can disappear, and keeps 3x/10x exports consistent with the preview.
+    // Round-34 fix: blur the glyph MASK itself (fill style + BlurMaskFilter) so the result is a
+    // soft halo around the letters. A blurred STROKE with width 2r filled a solid band that looked
+    // like a red rectangle for large radii (and the pass was previously never drawn).
+    // Round 36: multi-layer glow. A single fixed-alpha blur loses energy with radius (r48 weaker
+    // than r24) and r1 is invisible; an inner sharp core + larger outer halo + source-over repeats
+    // keep all radii visible and roughly monotonic. Same rule as the preview.
+    val glowLayers: List<Pair<Paint, Int>> = if (spec.glow && spec.glowRadius > 0f) {
+        val rDp = spec.glowRadius
+        val outerRadius = (rDp * designScale).coerceAtLeast(2f)
+        val outerAlpha = (0.35f + 0.55f * (rDp / 48f)).coerceIn(0.35f, 0.9f)
+        val innerRadius = (outerRadius * 0.4f).coerceAtLeast(2f)
+        fun layer(radius: Float, alpha: Float): Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textAlign = Paint.Align.CENTER
+            color = withAlpha(spec.glowColor, stickerAlpha * alpha)
+            textSize = fontSize
+            this.typeface = typeface
+            style = Paint.Style.FILL
+            maskFilter = BlurMaskFilter(radius, BlurMaskFilter.Blur.NORMAL)
+        }
+        listOf(layer(outerRadius, outerAlpha) to 2, layer(innerRadius, 0.85f) to 2)
+    } else {
+        emptyList()
+    }
+    val strokePaint = if (spec.stroke && spec.strokeWidth > 0f) {
             TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 textAlign = Paint.Align.CENTER
                 color = withAlpha(spec.strokeColor, stickerAlpha)
@@ -759,16 +778,26 @@ object FaceRenderer {
         val fm = fillPaint.fontMetrics
         val lineHeight = (fm.descent - fm.ascent) * 1.05f
         val totalHeight = lineHeight * lines.size
+        val baselines = FloatArray(lines.size)
         var baseline = cy - totalHeight / 2f - fm.ascent
-        canvas.save()
-        canvas.rotate(FaceGeometry.clampRotation(spec.rot), cx, cy)
-        for (line in lines) {
-            // Outline first, then fill on top: the fill covers the inner half of the stroke so the
-            // outline only shows on the glyph's outer edge (no lines inside the glyph).
-            if (strokePaint != null) canvas.drawText(line, cx, baseline, strokePaint)
-            canvas.drawText(line, cx, baseline, fillPaint)
+        for (i in lines.indices) {
+            baselines[i] = baseline
             baseline += lineHeight
         }
+        canvas.save()
+        canvas.rotate(FaceGeometry.clampRotation(spec.rot), cx, cy)
+        // Round 35: three passes. All glow lines first (later rows must not cover earlier glow),
+        // then the outline, then the fill on top.
+        // Glow layers from largest to smallest, repeated source-over to build visible alpha.
+        for ((paint, repeats) in glowLayers) {
+            repeat(repeats) {
+                for (i in lines.indices) canvas.drawText(lines[i], cx, baselines[i], paint)
+            }
+        }
+        if (strokePaint != null) {
+            for (i in lines.indices) canvas.drawText(lines[i], cx, baselines[i], strokePaint)
+        }
+        for (i in lines.indices) canvas.drawText(lines[i], cx, baselines[i], fillPaint)
         canvas.restore()
     }
 
@@ -858,6 +887,14 @@ object FaceRenderer {
     }
 
     /** Multiplies an ARGB colour's alpha by [factor] (0..1). */
+    /** Glow colour with an alpha floor so radius=1 stays visible after blur. */
+    internal fun glowColorWithFloor(color: Int, stickerAlpha: Float): Int {
+        val base = withAlpha(color, stickerAlpha)
+        val floorAlpha = (0.35f * 255f).toInt()
+        val a = maxOf(Color.alpha(base), floorAlpha)
+        return (base and 0x00FFFFFF) or (a shl 24)
+    }
+
     internal fun withAlpha(color: Int, factor: Float): Int {
         val a = (Color.alpha(color) * factor.coerceIn(0f, 1f)).toInt().coerceIn(0, 255)
         return Color.argb(a, Color.red(color), Color.green(color), Color.blue(color))
@@ -1161,6 +1198,9 @@ object ScaledFaceCache {
         return scaled
     }
 }
+
+
+
 
 
 
