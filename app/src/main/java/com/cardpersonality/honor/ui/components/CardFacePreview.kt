@@ -751,6 +751,8 @@ internal class TextStickerPlan(
     val ascent: Float,
     val glow: Boolean,
     val glowRadiusPx: Float,
+    val strokeWidthPx: Float,
+    val fontSizePx: Float,
     /** Glow/stroke text pre-rendered on a software bitmap (hardware canvases ignore shadow layers). */
     @Volatile var offscreen: android.graphics.Bitmap? = null,
 )
@@ -806,6 +808,8 @@ private fun buildTextStickerPlan(spec: StickerSpec, designScale: Float): TextSti
         ascent = fm.ascent,
         glow = spec.glow && spec.glowRadius > 0f,
         glowRadiusPx = spec.glowRadius * designScale,
+        strokeWidthPx = if (spec.stroke) spec.strokeWidth * designScale else 0f,
+        fontSizePx = fontSize,
     )
 }
 
@@ -845,9 +849,18 @@ private fun renderTextOffscreen(plan: TextStickerPlan): android.graphics.Bitmap?
     for (line in plan.lines) {
         textWidth = maxOf(textWidth, plan.fillPaint.measureText(line))
     }
-    val pad = (plan.glowRadiusPx * 2.2f + 8f).coerceAtLeast(8f)
-    val width = (textWidth + pad * 2f).toInt().coerceAtLeast(4)
-    val height = (plan.totalHeight + pad * 2f).toInt().coerceAtLeast(4)
+    // Round 33: separate X/Y padding; glow radius, stroke half-width and italic overhang must all
+    // fit or radius=1 / italic / underline text gets clipped at the bitmap edges.
+    val basePad = maxOf(
+        plan.glowRadiusPx * 2.2f,
+        plan.strokeWidthPx * 0.75f + 4f,
+        8f,
+    )
+    val italicExtra = plan.fontSizePx * 0.22f
+    val padX = basePad + italicExtra
+    val padY = basePad
+    val width = (textWidth + padX * 2f).toInt().coerceAtLeast(4)
+    val height = (plan.totalHeight + padY * 2f).toInt().coerceAtLeast(4)
     val bitmap = android.graphics.Bitmap.createBitmap(
         width, height, android.graphics.Bitmap.Config.ARGB_8888,
     )
@@ -858,7 +871,11 @@ private fun renderTextOffscreen(plan: TextStickerPlan): android.graphics.Bitmap?
     val centeredStroke = plan.strokePaint?.let { paint ->
         android.graphics.Paint(paint).apply { textAlign = android.graphics.Paint.Align.CENTER }
     }
-    var baseline = pad + (fm.descent - fm.ascent) / 2f - fm.ascent
+    // Round 33: first-line baseline must match the normal draw path exactly:
+    //   normal global baseline = cy - totalHeight/2 - ascent
+    //   bitmap is drawn at    cy - totalHeight/2 - padY
+    //   => bitmap-local baseline = padY - ascent (old formula shifted text by ~(d-a)/2).
+    var baseline = padY - fm.ascent
     for (line in plan.lines) {
         if (centeredStroke != null) canvas.drawText(line, width / 2f, baseline, centeredStroke)
         canvas.drawText(line, width / 2f, baseline, centered)
@@ -1098,6 +1115,7 @@ fun EmptyFacePlaceholder(
             ),
     )
 }
+
 
 
 
