@@ -250,7 +250,7 @@ fun HomeScreen(
                                 modifier = Modifier.size(20.dp),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                                CircularProgressIndicator(size = 20.dp, strokeWidth = 2.dp)
                             }
                         } else {
                             Icon(MiuixIcons.Refresh, contentDescription = "刷新")
@@ -464,7 +464,7 @@ private fun StatusCard(
                         modifier = Modifier.size(18.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                        CircularProgressIndicator(size = 18.dp, strokeWidth = 2.dp)
                     }
                 } else {
                     Column(horizontalAlignment = Alignment.End) {
