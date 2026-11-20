@@ -259,6 +259,22 @@ fun AboutScreen(
                 }
             }
 
+            item { SmallTitle("致谢") }
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        text = "本软件使用 DeepSeek V4.1-Flash 制作，可能存在部分问题。若您在使用过程中遇到问题，" +
+                            "请导出诊断报告，并通过“发送错误报告”向我反馈问题，感谢各位的支持。",
+                        style = MiuixTheme.textStyles.body1,
+                        color = MiuixTheme.colorScheme.onBackground,
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
+                    )
+                }
+            }
             item { SmallTitle("开源支持") }
             item {
                 Card(

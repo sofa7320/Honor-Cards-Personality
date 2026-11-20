@@ -1325,6 +1325,14 @@ private fun OutputTab(
         color = MiuixTheme.colorScheme.onBackgroundVariant,
         modifier = Modifier.padding(horizontal = 22.dp, vertical = 6.dp),
     )
+    if (exportScale >= 6) {
+        Text(
+            text = "当前导出画质倍率过高，可能会导致卡面加载过慢、性能下降。",
+            style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.error,
+            modifier = Modifier.padding(horizontal = 22.dp, vertical = 6.dp),
+        )
+    }
     SettingsGroup {
         LabeledSlider(
             title = "导出画质",
