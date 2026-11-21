@@ -108,6 +108,8 @@ fun HomeScreen(
     var reportUpdatedAt by remember { mutableStateOf(initialSnapshot?.reportUpdatedAt ?: 0L) }
     var loading by remember { mutableStateOf(initialSnapshot == null) }
     var moduleConnected by remember { mutableStateOf<Boolean?>(null) }
+    // Round 37: whether every reported card's face is readable (faceUrl or local original exists).
+    var facesReadable by remember { mutableStateOf(false) }
     var hasLoadedOnce by remember { mutableStateOf(initialSnapshot != null) }
     var manualRefresh by remember { mutableStateOf(false) }
     var storeVersion by remember { mutableIntStateOf(initialSnapshot?.storeVersion ?: 0) }
@@ -154,6 +156,11 @@ fun HomeScreen(
                     com.cardpersonality.honor.data.bridge.PanelBridgeServer.ensureStarted(ctx)
                 }
                 cards = FaceRepository.cards(ctx).filterNot { isPlaceholderCard(it) }
+                // Round 37: green status requires readable faces, not just hookReported.
+                facesReadable = cards.isNotEmpty() && cards.all { card ->
+                    !card.faceUrl.isNullOrBlank() ||
+                        FaceRepository.originalSnapshotFile(ctx, card.type, card.key.id)?.isFile == true
+                }
                 if (refreshOriginalsOnResume) {
                     refreshOriginalsOnResume = false
                     cards.forEach { card ->
@@ -239,7 +246,12 @@ fun HomeScreen(
                 actions = {
                     IconButton(onClick = { if (!loading) { manualRefresh = true; reloadKey++ } }) {
                         if (loading) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                            Box(
+                                modifier = Modifier.size(20.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                CircularProgressIndicator(size = 20.dp, strokeWidth = 2.dp)
+                            }
                         } else {
                             Icon(MiuixIcons.Refresh, contentDescription = "刷新")
                         }
@@ -261,6 +273,7 @@ fun HomeScreen(
                     moduleConnected = moduleConnected,
                     reportUpdatedAt = reportUpdatedAt,
                     cardCount = cards.size,
+                    facesReadable = facesReadable,
                     walletPackagesText = walletPackagesText,
                     versionName = BuildConfig.VERSION_NAME,
                     oppoStatus = oppoEngineStatus,
@@ -387,6 +400,7 @@ private fun StatusCard(
     moduleConnected: Boolean?,
     reportUpdatedAt: Long,
     cardCount: Int,
+    facesReadable: Boolean,
     walletPackagesText: String,
     versionName: String,
     oppoStatus: OppoEngineStatus?,
@@ -399,10 +413,12 @@ private fun StatusCard(
     // Round 16: per-process injection evidence (expandable rows).
     var expandedProcesses by remember { mutableStateOf(setOf<String>()) }
     val hookReported = reportUpdatedAt > 0L
+    // Round 37: red = module unavailable or no cards; yellow = checking / activated but a face is
+    // unreadable; green = activated + cards + every face readable (hookReported no longer decides).
     val accent = when {
-        moduleConnected == false -> Color(0xFFE94634)
-        hookReported -> Color(0xFF34C759)
-        moduleConnected == null -> MiuixTheme.colorScheme.onBackgroundVariant
+        moduleConnected == false || cardCount == 0 -> Color(0xFFE94634)
+        moduleConnected == null -> Color(0xFFFFB020)
+        facesReadable -> Color(0xFF34C759)
         else -> Color(0xFFFFB020)
     }
     val title = when {
@@ -444,7 +460,12 @@ private fun StatusCard(
                     }
                 }
                 if (moduleConnected == null) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                    Box(
+                        modifier = Modifier.size(18.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(size = 18.dp, strokeWidth = 2.dp)
+                    }
                 } else {
                     Column(horizontalAlignment = Alignment.End) {
                         Text(
@@ -1087,6 +1108,7 @@ private fun formatTime(millis: Long): String {
         ""
     }
 }
+
 
 
 
